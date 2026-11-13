@@ -112,8 +112,10 @@ function parsePdfObjects(filePath) {
       const start = m.index + m[0].indexOf("stream") + 6;
       const nl = str[start] === "\r" && str[start + 1] === "\n" ? 2 : (str[start] === "\n" || str[start] === "\r" ? 1 : 0);
       const dataStart = start + nl;
-      const dataEnd = str.indexOf("endstream", dataStart);
-      const lenMatch = dict.match(/\/Length\s+(\d+)/);
+      let dataEnd = str.indexOf("endstream", dataStart);
+      if (str[dataEnd - 1] === "\n") dataEnd--;
+      if (str[dataEnd - 1] === "\r") dataEnd--;
+      const lenMatch = dict.match(/\/Length\s+(\d+)\b(?!\s+0\s+R)/);
       const raw = lenMatch ? buf.subarray(dataStart, dataStart + parseInt(lenMatch[1], 10)) : buf.subarray(dataStart, dataEnd);
       const isImg = /\/Subtype\s*\/Image/.test(dict);
       let stream = "";
@@ -167,14 +169,74 @@ function buildFontCmaps(objs) {
   const fontObjToCmap = {};
   for (const [fid, o] of Object.entries(objs)) {
     const tu = o.dict.match(/\/ToUnicode\s+(\d+)\s+0\s+R/);
-    if (tu && cmaps[tu[1]]) fontObjToCmap[fid] = cmaps[tu[1]];
+    if (tu && cmaps[tu[1]]) {
+      fontObjToCmap[fid] = cmaps[tu[1]];
+    } else if (o.dict.includes("WinCharSetFFFF")) {
+      const map = {};
+      for (let k = 0; k < 10; k++) map[0x835b + k] = String.fromCodePoint(0x2460 + k);
+      fontObjToCmap[fid] = map;
+    }
   }
   return fontObjToCmap;
 }
 
+function decodeFlateImageToRgb(o, objs, w, h) {
+  const inf = zlib.inflateSync(o.raw);
+  let rgb;
+  if (inf.length === w * h * 3) {
+    rgb = Buffer.from(inf);
+  } else if (inf.length === w * h) {
+    rgb = Buffer.alloc(w * h * 3);
+    let pal = null;
+    const csRef = o.dict.match(/\/ColorSpace\s+(\d+)\s+0\s+R/);
+    const csStr = csRef && objs[csRef[1]] ? objs[csRef[1]].dict : o.dict;
+    if (csStr.includes("/Indexed")) {
+      const pm = csStr.match(/\(((?:\\.|[^\\()])*)\)\s*\]/);
+      if (pm) {
+        pal = Buffer.from(unescapePdfStr(pm[1]));
+      } else {
+        const hm = csStr.match(/<([0-9A-Fa-f\s]+)>\s*\]/);
+        if (hm) pal = Buffer.from(hm[1].replace(/\s+/g, ""), "hex");
+      }
+    }
+    for (let i = 0; i < w * h; i++) {
+      const v = inf[i];
+      if (pal && v * 3 + 2 < pal.length) {
+        rgb[i * 3] = pal[v * 3];
+        rgb[i * 3 + 1] = pal[v * 3 + 1];
+        rgb[i * 3 + 2] = pal[v * 3 + 2];
+      } else {
+        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v;
+      }
+    }
+  } else {
+    throw new Error(`Unsupported Flate image buffer length ${inf.length} for ${w}x${h}`);
+  }
+  const smRef = o.dict.match(/\/SMask\s+(\d+)\s+0\s+R/);
+  if (smRef && objs[smRef[1]]?.raw) {
+    const mask = zlib.inflateSync(objs[smRef[1]].raw);
+    if (mask.length === w * h) {
+      for (let i = 0; i < w * h; i++) {
+        const a = mask[i];
+        rgb[i * 3] = Math.round((rgb[i * 3] * a + 255 * (255 - a)) / 255);
+        rgb[i * 3 + 1] = Math.round((rgb[i * 3 + 1] * a + 255 * (255 - a)) / 255);
+        rgb[i * 3 + 2] = Math.round((rgb[i * 3 + 2] * a + 255 * (255 - a)) / 255);
+      }
+    }
+  }
+  if (w <= 40 && h <= 40 && rgb.every((b) => b === 255)) return null;
+  return rgbToPng(rgb, w, h);
+}
+
 function extractImages(objs, code, jpxQueue) {
+  const smaskIds = new Set();
+  for (const o of Object.values(objs)) {
+    const sm = o.dict?.match(/\/SMask\s+(\d+)\s+0\s+R/);
+    if (sm) smaskIds.add(sm[1]);
+  }
   const imgTags = {};
   for (const [id, o] of Object.entries(objs)) {
+    if (smaskIds.has(id)) continue;
     if (!o.raw || !/\/Subtype\s*\/Image/.test(o.dict)) continue;
     const w = +(o.dict.match(/\/Width\s+(\d+)/)?.[1] || 0);
     const h = +(o.dict.match(/\/Height\s+(\d+)/)?.[1] || 0);
@@ -185,10 +247,16 @@ function extractImages(objs, code, jpxQueue) {
     const outPath = path.join(IMG_DIR, file);
     if (isJpx) {
       jpxQueue.push({ jp2Buf: o.raw, w, h, outPath });
+    } else if (!isJpg) {
+      const data = decodeFlateImageToRgb(o, objs, w, h);
+      if (!data) continue;
+      if (!fs.existsSync(outPath)) {
+        if (!data.length) throw new Error(`Empty image extracted: ${file}`);
+        fs.writeFileSync(outPath, data);
+      }
     } else if (!fs.existsSync(outPath)) {
-      const data = isJpg ? o.raw : rgbToPng(zlib.inflateSync(o.raw), w, h);
-      if (!data.length) throw new Error(`Empty image extracted: ${file}`);
-      fs.writeFileSync(outPath, data);
+      if (!o.raw.length) throw new Error(`Empty image extracted: ${file}`);
+      fs.writeFileSync(outPath, o.raw);
     }
     const tag = (w <= 40 && h <= 40) ? `[IMG_INLINE:${file}]` : `[IMG:${file}]`;
     imgTags[id] = tag;
@@ -228,14 +296,18 @@ function extractQuestionText(filePath, code, jpxQueue) {
     const rm = po.dict.match(/\/Resources\s+(\d+)\s+0\s+R/);
     if (rm && objs[rm[1]]) resDict = objs[rm[1]].dict;
     const localFonts = {}, localImgs = {};
-    for (const fm of resDict.matchAll(/\/(F\d+)\s+(\d+)\s+0\s+R/g)) localFonts[fm[1]] = fontObjToCmap[fm[2]] || null;
-    for (const im of resDict.matchAll(/\/(X\d+|Image\d+|Im\d+|I\d+)\s+(\d+)\s+0\s+R/g)) localImgs[im[1]] = im[2];
+    const fRef = resDict.match(/\/Font\s+(\d+)\s+0\s+R/);
+    const fontDictStr = fRef && objs[fRef[1]] ? objs[fRef[1]].dict : resDict;
+    for (const fm of fontDictStr.matchAll(/\/(F\d+|R\d+)\s+(\d+)\s+0\s+R/g)) localFonts[fm[1]] = fontObjToCmap[fm[2]] || null;
+    const xRef = resDict.match(/\/XObject\s+(\d+)\s+0\s+R/);
+    const xDictStr = xRef && objs[xRef[1]] ? objs[xRef[1]].dict : resDict;
+    for (const im of xDictStr.matchAll(/\/(X\d+|Image\d+|Im\d+|I\d+|R\d+)\s+(\d+)\s+0\s+R/g)) localImgs[im[1]] = im[2];
 
     let ctm = [1, 0, 0, 1, 0, 0], stack = [];
     let curFont = null, tmMat = [1, 0, 0, 1, 0, 0];
     const pageItems = [];
     const seen = new Set();
-    const tokRe = /\b(q|Q)\b|([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+(cm|Tm)|([\d.-]+)\s+([\d.-]+)\s+Td|\/(F\d+)\s+[\d.]+\s+Tf|<([0-9A-Fa-f]+)>\s*Tj|\(((?:\\.|[^\\()])*)\)\s*Tj|\[([^\]]+)\]\s*TJ|\/(X\d+|Image\d+|Im\d+|I\d+)\s+Do/g;
+    const tokRe = /\b(q|Q)\b|([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+(cm|Tm)|([\d.-]+)\s+([\d.-]+)\s+Td|\/(F\d+|R\d+)\s+[\d.]+\s+Tf|<([0-9A-Fa-f]+)>\s*Tj|\(((?:\\.|[^\\()])*)\)\s*Tj|\[((?:\((?:\\.|[^\\()])*\)|[^\]])+)\]\s*TJ|\/(X\d+|Image\d+|Im\d+|I\d+|R\d+)\s+Do/g;
     let tm;
     while ((tm = tokRe.exec(contentStream))) {
       if (tm[1] === "q") stack.push({ ctm: [...ctm], curFont });
@@ -267,7 +339,7 @@ function extractQuestionText(filePath, code, jpxQueue) {
           }
         }
       } else if (tm[15]) {
-        const imgObjId = localImgs[tm[15]] || tm[15].replace(/^X/, "");
+        const imgObjId = localImgs[tm[15]] || tm[15].replace(/^[XR]/, "");
         const tag = imgTags[imgObjId];
         if (!tag) continue;
         const x = ctm[4];
@@ -448,7 +520,7 @@ for (const htmlPath of findExamHtmls(BANK_ROOT)) {
     const ansPdf = links.match(/href='([^']+)'[^>]*>答案<\/a>/)?.[1];
     const modPdf = links.match(/href='([^']+)'[^>]*>更正答案<\/a>/)?.[1];
     const examCode = qPdf?.match(/^(\d+)_/)?.[1];
-    const code = qPdf?.match(/_(\d{4})_/)?.[1];
+    const code = qPdf?.match(/_(\d{2,4})_/)?.[1];
     if (!qPdf || !ansPdf || !examCode || !code) throw new Error(`Invalid row in ${htmlPath} for ${subject}`);
 
     const imgPrefix = `${examCode}_${code}`;
