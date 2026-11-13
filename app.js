@@ -170,17 +170,23 @@ async function askAI(q, userOpt) {
 
   let res, raw, data, text;
   if (key.startsWith("AIza") || key.startsWith("AQ.")) {
-    const base = key.startsWith("AQ.")
-      ? "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent"
-      : "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-    res = await fetch(`${base}?key=${encodeURIComponent(key)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
-    });
-    raw = await res.text();
-    try { data = JSON.parse(raw); } catch {}
-    text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const endpoints = key.startsWith("AQ.")
+      ? [
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+          "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent",
+        ]
+      : ["https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"];
+    for (const base of endpoints) {
+      res = await fetch(`${base}?key=${encodeURIComponent(key)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+      });
+      raw = await res.text();
+      try { data = JSON.parse(raw); } catch { data = null; }
+      text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (res.ok && text) break;
+    }
   } else if (key.startsWith("gsk_") || key.startsWith("sk-")) {
     const isGroq = key.startsWith("gsk_");
     const url = isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
