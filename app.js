@@ -158,6 +158,9 @@ $("apiKey").oninput = (e) => localStorage.setItem("examApiKey", e.target.value.t
 async function askAI(q, userOpt) {
   const key = $("apiKey").value.trim();
   if (!key) throw new Error("請先在上方輸入 API Key");
+  if (/[^\x21-\x7E]/.test(key)) {
+    throw new Error("API Key 格式不正確（包含空白或中文／全形字元），請貼上正確的 API Key（例如 AIza...、sk-...、gsk_...）");
+  }
 
   const clean = (s) => String(s ?? "").replace(/\[IMG(?:_INLINE)?:[^\]]+\]/g, "[附圖]");
   const qText = q.prevQ ? `（上題題幹：${clean(q.prevQ)}）\n${clean(q.q)}` : clean(q.q);
@@ -178,7 +181,7 @@ async function askAI(q, userOpt) {
     raw = await res.text();
     try { data = JSON.parse(raw); } catch {}
     text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  } else {
+  } else if (key.startsWith("gsk_") || key.startsWith("sk-")) {
     const isGroq = key.startsWith("gsk_");
     const url = isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
     const model = isGroq ? "llama-3.3-70b-versatile" : "gpt-4o-mini";
@@ -190,6 +193,8 @@ async function askAI(q, userOpt) {
     raw = await res.text();
     try { data = JSON.parse(raw); } catch {}
     text = data?.choices?.[0]?.message?.content;
+  } else {
+    throw new Error("無法辨識的 API Key 格式，請貼上 Gemini (AIza...)、OpenAI (sk-...) 或 Groq (gsk_...) 金鑰");
   }
 
   if (!res.ok || !text) throw new Error(data?.error?.message || raw || `HTTP ${res.status}`);
