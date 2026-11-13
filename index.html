@@ -32,6 +32,19 @@
         <a href="template.csv" download>下載 CSV 範本</a>
       </div>
 
+      <div id="wrongSection" class="wrong-section">
+        <div class="wrong-header">
+          <strong id="wrongInfo">錯題簿：目前無錯題</strong>
+          <div class="wrong-actions">
+            <button id="startWrong" type="button" disabled>錯題測驗</button>
+            <button id="toggleWrongList" type="button" class="secondary" hidden>檢視錯題清單</button>
+            <label class="inline"><input id="autoRemoveWrong" type="checkbox" /> 答對自動移出</label>
+            <button id="clearWrong" type="button" class="secondary" hidden>清空錯題簿</button>
+          </div>
+        </div>
+        <div id="wrongList" hidden></div>
+      </div>
+
       <div id="history" hidden>
         <h3>最近成績</h3>
         <table>

@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 const BUILTIN = window.QUESTIONS;
 let all = BUILTIN;
 let picked = [];
+let lastMode = "normal";
 
 // ---------- 題庫：內建 or 匯入的 CSV（存在瀏覽器 localStorage） ----------
 function loadBank() {
@@ -105,34 +106,60 @@ function fmt(s) {
     .replace(/\[IMG_INLINE:([^\]]+)\]/g, '<img src="img/$1" class="q-img-inline" alt="符號" />');
 }
 
-function start() {
+function startQuiz(mode = "normal") {
+  lastMode = mode;
   const exam = $("exam").value || "全部";
   const subject = $("subject").value;
-  const pool = all.filter((q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject));
+  let pool;
+
+  if (mode === "wrong") {
+    const wrongAll = loadWrongBook();
+    if (!wrongAll.length) return alert("目前錯題簿沒有題目");
+    const filtered = wrongAll.filter((q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject));
+    const chosenWrong = filtered.length ? filtered : wrongAll;
+    pool = chosenWrong.map((q) => {
+      if (!/[承呈同依]上題/.test(q.q)) return q;
+      const idx = all.findIndex((x) => getQKey(x) === getQKey(q));
+      const prev = idx > 0 ? all[idx - 1] : null;
+      if (prev && prev.exam === q.exam && prev.subject === q.subject) {
+        return { ...q, prevStem: prev.q };
+      }
+      return q;
+    });
+  } else {
+    pool = all.filter((q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject));
+  }
   if (!pool.length) return alert("此篩選條件下沒有題目");
+
   const n = Math.min(Math.max(1, +$("count").value || 1), pool.length);
   const mixOptions = $("mixOptions").checked;
 
-  const groups = [];
-  for (const q of pool) {
-    if (groups.length && /[承呈同依]上題/.test(q.q) && groups[groups.length - 1][0].subject === q.subject && groups[groups.length - 1][0].exam === q.exam) {
-      const grp = groups[groups.length - 1];
-      grp.push({ ...q, prevQ: grp.map((p) => p.q).join("\n") });
-    } else {
-      groups.push([q]);
+  let rawPicked = [];
+  if (mode === "wrong") {
+    rawPicked = shuffle(pool).slice(0, n);
+  } else {
+    const groups = [];
+    for (const q of pool) {
+      if (groups.length && /[承呈同依]上題/.test(q.q) && groups[groups.length - 1][0].subject === q.subject && groups[groups.length - 1][0].exam === q.exam) {
+        const grp = groups[groups.length - 1];
+        grp.push({ ...q, prevQ: grp.map((p) => p.q).join("\n") });
+      } else {
+        groups.push([q]);
+      }
     }
+    for (const g of shuffle(groups)) {
+      if (rawPicked.length + g.length <= n) rawPicked.push(...g);
+      if (rawPicked.length === n) break;
+    }
+    if (!rawPicked.length && groups.length) rawPicked.push(...groups[0]);
   }
-  const rawPicked = [];
-  for (const g of shuffle(groups)) {
-    if (rawPicked.length + g.length <= n) rawPicked.push(...g);
-    if (rawPicked.length === n) break;
-  }
-  if (!rawPicked.length && groups.length) rawPicked.push(...groups[0]);
 
   picked = rawPicked.map((q) => {
-    if (!mixOptions) return q;
+    const rawQ = q.rawQ || q;
+    const displayQ = q.prevStem ? `【前題題幹】${q.prevStem}\n\n${q.q}` : q.q;
+    if (!mixOptions) return { ...q, q: displayQ, rawQ };
     const order = shuffle(q.options.map((_, i) => i));
-    const item = { ...q, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
+    const item = { ...q, q: displayQ, rawQ, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
     if (q.answers) item.answers = q.answers.map((a) => order.indexOf(a));
     if (q.optionExplains) item.optionExplains = order.map((i) => q.optionExplains[i]);
     return item;
@@ -166,11 +193,15 @@ function start() {
 function submit(e) {
   e.preventDefault();
   let correct = 0;
+  const autoRemove = $("autoRemoveWrong").checked;
   picked.forEach((q, i) => {
     const box = $(`q${i}`);
     const chosen = +box.querySelector("input:checked").value;
     const ok = q.answers ? q.answers.includes(chosen) : chosen === q.answer;
     if (ok) correct++;
+    const rawQ = q.rawQ || q;
+    if (!ok) addWrongQuestion(rawQ);
+    else if (autoRemove) removeWrongQuestion(getQKey(rawQ));
     box.className = ok ? "right" : "wrong";
     box.querySelectorAll("input").forEach((el) => (el.disabled = true));
     const ex = box.querySelector(".explain");
@@ -195,14 +226,99 @@ function submit(e) {
       (source ? `<div class="q-source">出處：${esc(source)}</div>` : "");
     ex.hidden = false;
   });
+  renderWrongBook();
   $("quiz").querySelector(".quiz-actions").remove();
   const pct = Math.round((correct / picked.length) * 100);
   $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分）`;
   $("result").hidden = false;
   $("result").scrollIntoView({ behavior: "smooth" });
   const exam = $("exam").value;
-  const label = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
+  const baseLabel = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
+  const label = lastMode === "wrong" ? `[錯題] ${baseLabel}` : baseLabel;
   saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
+}
+
+// ---------- 錯題簿 ----------
+function getQKey(q) {
+  return `${q.exam || ""}||${q.subject || ""}||${q.num || q.q}`;
+}
+
+function loadWrongBook() {
+  const saved = JSON.parse(localStorage.getItem("wrongBook") || "[]");
+  const byKey = new Map(all.map((q) => [getQKey(q), q]));
+  return saved.map((item) => {
+    const canon = byKey.get(getQKey(item));
+    return canon ? { ...canon, wrongCount: item.wrongCount || 1, lastTime: item.lastTime || "" } : item;
+  });
+}
+
+function saveWrongBook(list) {
+  localStorage.setItem("wrongBook", JSON.stringify(list));
+  renderWrongBook();
+}
+
+function addWrongQuestion(rawQ) {
+  const key = getQKey(rawQ);
+  const list = JSON.parse(localStorage.getItem("wrongBook") || "[]");
+  const idx = list.findIndex((item) => getQKey(item) === key);
+  const count = idx >= 0 ? (list[idx].wrongCount || 1) + 1 : 1;
+  if (idx >= 0) list.splice(idx, 1);
+  list.unshift({
+    exam: rawQ.exam || "",
+    subject: rawQ.subject || "",
+    num: rawQ.num || 0,
+    q: rawQ.q,
+    options: rawQ.options,
+    answer: rawQ.answer,
+    ...(rawQ.answers ? { answers: rawQ.answers } : {}),
+    explain: rawQ.explain || "",
+    ...(rawQ.optionExplains ? { optionExplains: rawQ.optionExplains } : {}),
+    wrongCount: count,
+    lastTime: new Date().toLocaleString(),
+  });
+  localStorage.setItem("wrongBook", JSON.stringify(list));
+}
+
+function removeWrongQuestion(key) {
+  const list = JSON.parse(localStorage.getItem("wrongBook") || "[]").filter((item) => getQKey(item) !== key);
+  localStorage.setItem("wrongBook", JSON.stringify(list));
+}
+
+function renderWrongBook() {
+  const list = loadWrongBook();
+  $("wrongInfo").textContent = list.length ? `錯題簿：共 ${list.length} 題` : "錯題簿：目前無錯題";
+  $("startWrong").disabled = !list.length;
+  $("toggleWrongList").hidden = !list.length;
+  $("clearWrong").hidden = !list.length;
+  if (!list.length) {
+    $("wrongList").hidden = true;
+    $("wrongList").innerHTML = "";
+    $("toggleWrongList").textContent = "檢視錯題清單";
+    return;
+  }
+  $("wrongList").innerHTML = list.map((q) => {
+    const key = getQKey(q);
+    const source = [q.exam, q.subject, q.num ? `第 ${q.num} 題` : ""].filter(Boolean).join("・") || "自訂題庫";
+    const ansIndices = q.answers || [q.answer];
+    return `
+      <div class="wrong-card">
+        <div class="wrong-meta">
+          <span>${esc(source)}｜錯 ${q.wrongCount || 1} 次${q.lastTime ? `｜${esc(q.lastTime)}` : ""}</span>
+          <button type="button" class="secondary wrong-remove" data-key="${esc(key)}">移出</button>
+        </div>
+        <div class="q-title">${fmt(q.q)}</div>
+        ${q.options.map((opt, j) => {
+          const isAns = ansIndices.includes(j);
+          const noteText = q.optionExplains?.[j];
+          return `
+            <div class="wrong-opt ${isAns ? "opt-correct" : ""}">
+              <span class="opt-text">(${"ABCDEFGH"[j]}) ${fmt(opt)}</span>
+              ${noteText ? `<div class="opt-note"><span class="opt-tag ${isAns ? "tag-right" : "tag-wrong"}">${isAns ? "✔ 正解選項" : "✘ 選項解析"}</span> ${fmt(noteText)}</div>` : ""}
+            </div>`;
+        }).join("")}
+        ${q.explain ? `<p class="explain">${esc(q.explain)}</p>` : ""}
+      </div>`;
+  }).join("");
 }
 
 // ---------- 成績紀錄 ----------
@@ -226,9 +342,43 @@ $("clearHistory").onclick = () => {
   renderHistory();
 };
 
-$("start").onclick = start;
+$("autoRemoveWrong").checked = localStorage.getItem("autoRemoveWrong") === "1";
+$("autoRemoveWrong").onchange = () => {
+  localStorage.setItem("autoRemoveWrong", $("autoRemoveWrong").checked ? "1" : "0");
+};
+
+$("toggleWrongList").onclick = () => {
+  const willShow = $("wrongList").hidden;
+  $("wrongList").hidden = !willShow;
+  $("toggleWrongList").textContent = willShow ? "隱藏錯題清單" : "檢視錯題清單";
+};
+
+$("clearWrong").onclick = () => {
+  if (!confirm("確定要清空所有錯題嗎？")) return;
+  saveWrongBook([]);
+};
+
+$("wrongList").onclick = (e) => {
+  const btn = e.target.closest(".wrong-remove");
+  if (!btn) return;
+  removeWrongQuestion(btn.dataset.key);
+  renderWrongBook();
+};
+
+$("start").onclick = () => startQuiz("normal");
+$("startWrong").onclick = () => startQuiz("wrong");
 $("quiz").onsubmit = submit;
-$("retry").onclick = start;
+$("retry").onclick = () => {
+  if (lastMode === "wrong" && !loadWrongBook().length) {
+    alert("錯題已全部移出錯題簿！");
+    $("quiz").hidden = true;
+    $("result").hidden = true;
+    $("setup").hidden = false;
+    window.scrollTo(0, 0);
+    return;
+  }
+  startQuiz(lastMode);
+};
 $("backHome").onclick = () => {
   $("quiz").hidden = true;
   $("result").hidden = true;
@@ -237,4 +387,5 @@ $("backHome").onclick = () => {
 };
 
 loadBank();
+renderWrongBook();
 renderHistory();
