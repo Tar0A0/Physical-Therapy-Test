@@ -21,8 +21,29 @@
         <label>題數
           <input id="count" type="number" min="1" value="1" />
         </label>
+        <label>避免重複
+          <select id="noRepeatMode">
+            <option value="paper">同份考卷／範圍抽完前不重複</option>
+            <option value="1h">1 小時內不重複</option>
+            <option value="6h">6 小時內不重複</option>
+            <option value="24h">24 小時（1 天）內不重複</option>
+            <option value="3d">3 天內不重複</option>
+            <option value="7d">7 天內不重複</option>
+            <option value="30d">30 天內不重複</option>
+            <option value="custom">自訂時效（小時）</option>
+            <option value="off">不限制（可重複抽題）</option>
+          </select>
+        </label>
+        <label id="customHoursWrap" hidden>時效（小時）
+          <input id="noRepeatHours" type="number" min="1" value="12" />
+        </label>
         <label class="inline"><input id="mixOptions" type="checkbox" checked /> 選項順序也打亂</label>
         <button id="start">開始抽題</button>
+      </div>
+
+      <div id="repeatBar" class="repeat-bar">
+        <span id="repeatInfo"></span>
+        <button id="resetSeen" type="button" class="secondary" hidden>重置此範圍已抽紀錄</button>
       </div>
 
       <div class="bank">

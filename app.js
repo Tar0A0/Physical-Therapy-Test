@@ -16,6 +16,7 @@ function loadBank() {
   $("exam").closest("label").hidden = exams.length <= 1;
   const subjects = ["全部", ...new Set(all.map((q) => q.subject))];
   $("subject").innerHTML = subjects.map((s) => `<option>${esc(s)}</option>`).join("");
+  updateRepeatInfo();
 }
 
 // 簡易 CSV 解析（支援雙引號包住含逗號/換行的欄位）
@@ -106,6 +107,73 @@ function fmt(s) {
     .replace(/\[IMG_INLINE:([^\]]+)\]/g, '<img src="img/$1" class="q-img-inline" alt="符號" />');
 }
 
+function loadSeenMap() {
+  try {
+    return JSON.parse(localStorage.getItem("seenQuestions") || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSeenMap(map) {
+  localStorage.setItem("seenQuestions", JSON.stringify(map));
+}
+
+function getRepeatWindowMs() {
+  const mode = $("noRepeatMode")?.value || "paper";
+  if (mode === "off") return null;
+  if (mode === "paper") return Infinity;
+  const table = {
+    "1h": 3600e3,
+    "6h": 6 * 3600e3,
+    "24h": 24 * 3600e3,
+    "3d": 3 * 86400e3,
+    "7d": 7 * 86400e3,
+    "30d": 30 * 86400e3,
+  };
+  if (table[mode]) return table[mode];
+  return Math.max(1, +$("noRepeatHours")?.value || 12) * 3600e3;
+}
+
+function isQuestionSeen(q, seenMap, now, winMs) {
+  if (winMs === null) return false;
+  const ts = seenMap[getQKey(q)];
+  if (!ts) return false;
+  if (winMs === Infinity) return true;
+  return now - ts < winMs;
+}
+
+function getFilteredPool() {
+  const exam = $("exam").value || "全部";
+  const subject = $("subject").value || "全部";
+  return all.filter((q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject));
+}
+
+function updateRepeatInfo() {
+  if (!$("noRepeatMode")) return;
+  const mode = $("noRepeatMode").value;
+  $("customHoursWrap").hidden = mode !== "custom";
+  const basePool = getFilteredPool();
+  const seenMap = loadSeenMap();
+  const now = Date.now();
+  const winMs = getRepeatWindowMs();
+  let seenCount = 0;
+  let everSeenCount = 0;
+  for (const q of basePool) {
+    if (seenMap[getQKey(q)]) everSeenCount++;
+    if (isQuestionSeen(q, seenMap, now, winMs)) seenCount++;
+  }
+  const availCount = basePool.length - seenCount;
+  if (mode === "off") {
+    $("repeatInfo").textContent = `目前範圍共 ${basePool.length} 題（未限制重複；此範圍曾抽過 ${everSeenCount} 題）`;
+  } else if (mode === "paper") {
+    $("repeatInfo").textContent = `目前考卷／範圍剩餘未抽：${availCount} / ${basePool.length} 題（已抽過 ${seenCount} 題）`;
+  } else {
+    $("repeatInfo").textContent = `目前範圍於設定時效內可抽：${availCount} / ${basePool.length} 題（時效內已抽過 ${seenCount} 題）`;
+  }
+  $("resetSeen").hidden = (mode === "off" ? everSeenCount : seenCount) === 0;
+}
+
 function startQuiz(mode = "normal") {
   lastMode = mode;
   const exam = $("exam").value || "全部";
@@ -127,16 +195,27 @@ function startQuiz(mode = "normal") {
       return q;
     });
   } else {
-    pool = all.filter((q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject));
+    pool = getFilteredPool();
   }
   if (!pool.length) return alert("此篩選條件下沒有題目");
 
   const n = Math.min(Math.max(1, +$("count").value || 1), pool.length);
   const mixOptions = $("mixOptions").checked;
+  const winMs = getRepeatWindowMs();
+  const seenMap = loadSeenMap();
+  const now = Date.now();
 
   let rawPicked = [];
   if (mode === "wrong") {
-    rawPicked = shuffle(pool).slice(0, n);
+    let unseenWrong = winMs === null ? pool : pool.filter((q) => !isQuestionSeen(q, seenMap, now, winMs));
+    if (!unseenWrong.length) {
+      if (!confirm("錯題簿在此範圍內的題目於目前防重複條件下已全部抽過！是否重置此範圍錯題的已抽紀錄並繼續測驗？")) return;
+      for (const q of pool) delete seenMap[getQKey(q)];
+      saveSeenMap(seenMap);
+      updateRepeatInfo();
+      unseenWrong = pool;
+    }
+    rawPicked = shuffle(unseenWrong).slice(0, n);
   } else {
     const groups = [];
     for (const q of pool) {
@@ -147,12 +226,28 @@ function startQuiz(mode = "normal") {
         groups.push([q]);
       }
     }
-    for (const g of shuffle(groups)) {
+    let unseenGroups = winMs === null ? groups : groups.filter((g) => g.some((q) => !isQuestionSeen(q, seenMap, now, winMs)));
+    if (!unseenGroups.length) {
+      if (!confirm("此考卷／範圍內的題目在目前防重複條件下已全部抽完！是否重置此範圍的已抽紀錄並重新抽題？")) return;
+      for (const q of pool) delete seenMap[getQKey(q)];
+      saveSeenMap(seenMap);
+      updateRepeatInfo();
+      unseenGroups = groups;
+    }
+    const shuffledGroups = shuffle(unseenGroups);
+    for (const g of shuffledGroups) {
       if (rawPicked.length + g.length <= n) rawPicked.push(...g);
       if (rawPicked.length === n) break;
     }
-    if (!rawPicked.length && groups.length) rawPicked.push(...groups[0]);
+    if (!rawPicked.length && shuffledGroups.length) rawPicked.push(...shuffledGroups[0]);
   }
+
+  const prevSeenJson = localStorage.getItem("seenQuestions") || "{}";
+  const nextSeenMap = loadSeenMap();
+  const markTs = Date.now();
+  for (const q of rawPicked) nextSeenMap[getQKey(q.rawQ || q)] = markTs;
+  saveSeenMap(nextSeenMap);
+  updateRepeatInfo();
 
   picked = rawPicked.map((q) => {
     const rawQ = q.rawQ || q;
@@ -179,6 +274,8 @@ function startQuiz(mode = "normal") {
       </fieldset>`).join("") +
     `<div class="quiz-actions"><button type="submit">交卷</button><button type="button" id="cancelQuiz" class="secondary">返回重選</button></div>`;
   $("cancelQuiz").onclick = () => {
+    localStorage.setItem("seenQuestions", prevSeenJson);
+    updateRepeatInfo();
     $("quiz").hidden = true;
     $("setup").hidden = false;
     window.scrollTo(0, 0);
@@ -227,6 +324,11 @@ function submit(e) {
     ex.hidden = false;
   });
   renderWrongBook();
+  const seenMap = loadSeenMap();
+  const submitTs = Date.now();
+  for (const q of picked) seenMap[getQKey(q.rawQ || q)] = submitTs;
+  saveSeenMap(seenMap);
+  updateRepeatInfo();
   $("quiz").querySelector(".quiz-actions").remove();
   const pct = Math.round((correct / picked.length) * 100);
   $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分）`;
@@ -384,6 +486,27 @@ $("backHome").onclick = () => {
   $("result").hidden = true;
   $("setup").hidden = false;
   window.scrollTo(0, 0);
+};
+
+$("noRepeatMode").value = localStorage.getItem("noRepeatMode") || "paper";
+$("noRepeatHours").value = localStorage.getItem("noRepeatHours") || "12";
+$("noRepeatMode").onchange = () => {
+  localStorage.setItem("noRepeatMode", $("noRepeatMode").value);
+  updateRepeatInfo();
+};
+$("noRepeatHours").onchange = () => {
+  const val = String(Math.max(1, +$("noRepeatHours").value || 12));
+  $("noRepeatHours").value = val;
+  localStorage.setItem("noRepeatHours", val);
+  updateRepeatInfo();
+};
+$("exam").onchange = updateRepeatInfo;
+$("subject").onchange = updateRepeatInfo;
+$("resetSeen").onclick = () => {
+  const seenMap = loadSeenMap();
+  for (const q of getFilteredPool()) delete seenMap[getQKey(q)];
+  saveSeenMap(seenMap);
+  updateRepeatInfo();
 };
 
 loadBank();
