@@ -115,3 +115,4 @@ fieldset.wrong { border-color: #e05555; background: #fff5f5; }
 .tag-right { color: #1b6e3d; }
 .tag-wrong { color: #b83232; }
 #result { text-align: center; }
+.result-actions { display: flex; gap: .8rem; justify-content: center; flex-wrap: wrap; }

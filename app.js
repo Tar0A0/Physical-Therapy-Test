@@ -228,7 +228,8 @@ $("clearHistory").onclick = () => {
 
 $("start").onclick = start;
 $("quiz").onsubmit = submit;
-$("retry").onclick = () => {
+$("retry").onclick = start;
+$("backHome").onclick = () => {
   $("quiz").hidden = true;
   $("result").hidden = true;
   $("setup").hidden = false;
