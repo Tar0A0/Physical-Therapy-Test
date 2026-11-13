@@ -91,6 +91,14 @@ function esc(s) {
 
 function fmt(s) {
   return esc(s)
+    .replace(/(?:^|\n)((?:\|[^\n]+\|(?:\n|$))+)/g, (_, block) => {
+      const rows = block
+        .trim()
+        .split("\n")
+        .map((r) => "<tr>" + r.slice(1, -1).split("|").map((c) => `<td>${c.trim()}</td>`).join("") + "</tr>")
+        .join("");
+      return `<table class="q-table"><tbody>${rows}</tbody></table>`;
+    })
     .replace(/\n/g, "<br>")
     .replace(/\[IMG:([^\]]+)\]/g, '<img src="img/$1" class="q-img" alt="附圖" />')
     .replace(/\[IMG_INLINE:([^\]]+)\]/g, '<img src="img/$1" class="q-img-inline" alt="符號" />');
@@ -125,6 +133,7 @@ function start() {
     const order = shuffle(q.options.map((_, i) => i));
     const item = { ...q, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
     if (q.answers) item.answers = q.answers.map((a) => order.indexOf(a));
+    if (q.optionExplains) item.optionExplains = order.map((i) => q.optionExplains[i]);
     return item;
   });
 
@@ -133,7 +142,10 @@ function start() {
       <fieldset id="q${i}">
         <div class="q-title">${i + 1}. ${fmt(q.q)}</div>
         ${q.options.map((opt, j) => `
-          <label><input type="radio" name="q${i}" value="${j}" required /> (${"ABCDEFGH"[j]}) ${fmt(opt)}</label>
+          <label class="opt-item">
+            <div class="opt-line"><input type="radio" name="q${i}" value="${j}" required /> <span class="opt-text">(${"ABCDEFGH"[j]}) ${fmt(opt)}</span></div>
+            <div class="opt-note" hidden></div>
+          </label>
         `).join("")}
         <p class="explain" hidden></p>
       </fieldset>`).join("") +
@@ -150,63 +162,6 @@ function start() {
   window.scrollTo(0, 0);
 }
 
-// ---------- AI 錯題解析 ----------
-// shortcut: key stays in localStorage and calls AI API directly from browser, move to a backend proxy if deploying publicly
-$("apiKey").value = localStorage.getItem("examApiKey") || "";
-$("apiKey").oninput = (e) => localStorage.setItem("examApiKey", e.target.value.trim());
-
-async function askAI(q, userOpt) {
-  const key = $("apiKey").value.trim();
-  if (!key) throw new Error("請先在上方輸入 API Key");
-  if (/[^\x21-\x7E]/.test(key)) {
-    throw new Error("API Key 格式不正確（包含空白或中文／全形字元），請貼上正確的 API Key（例如 AIza...、sk-...、gsk_...）");
-  }
-
-  const clean = (s) => String(s ?? "").replace(/\[IMG(?:_INLINE)?:[^\]]+\]/g, "[附圖]");
-  const qText = q.prevQ ? `（上題題幹：${clean(q.prevQ)}）\n${clean(q.q)}` : clean(q.q);
-  const opts = q.options.map((o, i) => `(${"ABCDEFGH"[i]}) ${clean(o)}`).join("\n");
-  const ansText = (q.answers || [q.answer]).map((a) => `(${"ABCDEFGH"[a]}) ${clean(q.options[a])}`).join(" 或 ");
-  const prompt = `你是台灣國考輔導老師，請用繁體中文精簡解析以下錯題（說明正確選項的依據，以及為何考生選的選項錯誤）：\n科目：${q.subject}\n題目：${qText}\n選項：\n${opts}\n考生誤選：${clean(userOpt)}\n正確答案：${ansText}`;
-
-  let res, raw, data, text;
-  if (key.startsWith("AIza") || key.startsWith("AQ.")) {
-    const endpoints = key.startsWith("AQ.")
-      ? [
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-          "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent",
-        ]
-      : ["https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"];
-    for (const base of endpoints) {
-      res = await fetch(`${base}?key=${encodeURIComponent(key)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
-      });
-      raw = await res.text();
-      try { data = JSON.parse(raw); } catch { data = null; }
-      text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (res.ok && text) break;
-    }
-  } else if (key.startsWith("gsk_") || key.startsWith("sk-")) {
-    const isGroq = key.startsWith("gsk_");
-    const url = isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
-    const model = isGroq ? "llama-3.3-70b-versatile" : "gpt-4o-mini";
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }),
-    });
-    raw = await res.text();
-    try { data = JSON.parse(raw); } catch {}
-    text = data?.choices?.[0]?.message?.content;
-  } else {
-    throw new Error("無法辨識的 API Key 格式，請貼上 Gemini (AIza...)、OpenAI (sk-...) 或 Groq (gsk_...) 金鑰");
-  }
-
-  if (!res.ok || !text) throw new Error(data?.error?.message || raw || `HTTP ${res.status}`);
-  return text.trim();
-}
-
 function submit(e) {
   e.preventDefault();
   let correct = 0;
@@ -221,60 +176,33 @@ function submit(e) {
     const ansIndices = q.answers || [q.answer];
     const ansLabel = ansIndices.map((a) => `(${"ABCDEFGH"[a]}) ${fmt(q.options[a])}`).join(" 或 ");
     const source = [q.exam, q.subject, q.num ? `第 ${q.num} 題` : ""].filter(Boolean).join("・");
+
+    box.querySelectorAll("label.opt-item").forEach((labelEl, j) => {
+      const isAns = ansIndices.includes(j);
+      const isChosenWrong = j === chosen && !isAns;
+      if (isAns) labelEl.classList.add("opt-correct");
+      else if (isChosenWrong) labelEl.classList.add("opt-wrong");
+      const noteEl = labelEl.querySelector(".opt-note");
+      const noteText = q.optionExplains?.[j];
+      if (noteEl && noteText) {
+        noteEl.innerHTML = `<span class="opt-tag ${isAns ? "tag-right" : "tag-wrong"}">${isAns ? "✔ 正解選項" : "✘ 選項解析"}</span> ${fmt(noteText)}`;
+        noteEl.hidden = false;
+      }
+    });
+
     ex.innerHTML = `${ok ? "✔ 答對" : "✘ 答錯，正確答案：" + ansLabel}${q.explain ? "｜" + esc(q.explain) : ""}` +
       (source ? `<div class="q-source">出處：${esc(source)}</div>` : "");
     ex.hidden = false;
-
-    if (!ok) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "secondary ai-btn";
-      btn.textContent = "AI 解析錯題";
-      const aiBox = document.createElement("div");
-      aiBox.className = "ai-explain";
-      aiBox.hidden = true;
-      btn.onclick = async () => {
-        if (!$("apiKey").value.trim()) {
-          alert("請先在上方輸入 API Key");
-          $("apiKey").focus();
-          return;
-        }
-        btn.disabled = true;
-        btn.textContent = "AI 解析中...";
-        try {
-          aiBox.textContent = await askAI(q, `(${"ABCDEFGH"[chosen]}) ${q.options[chosen]}`);
-          aiBox.hidden = false;
-          btn.remove();
-        } catch (err) {
-          aiBox.textContent = "AI 解析失敗：" + err.message;
-          aiBox.hidden = false;
-          btn.disabled = false;
-          btn.textContent = "重試 AI 解析";
-        }
-      };
-      box.append(btn, aiBox);
-    }
   });
   $("quiz").querySelector(".quiz-actions").remove();
   const pct = Math.round((correct / picked.length) * 100);
   $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分）`;
-  $("aiAll").hidden = correct === picked.length;
   $("result").hidden = false;
   $("result").scrollIntoView({ behavior: "smooth" });
   const exam = $("exam").value;
   const label = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
   saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
 }
-
-$("aiAll").onclick = () => {
-  if (!$("apiKey").value.trim()) {
-    alert("請先在上方輸入 API Key");
-    $("apiKey").focus();
-    return;
-  }
-  $("quiz").querySelectorAll(".ai-btn:not(:disabled)").forEach((b) => b.click());
-  $("quiz").querySelector(".wrong")?.scrollIntoView({ behavior: "smooth" });
-};
 
 // ---------- 成績紀錄 ----------
 function saveHistory(entry) {

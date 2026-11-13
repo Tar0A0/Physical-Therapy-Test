@@ -416,7 +416,18 @@ function findExamHtmls(dir) {
   return res.sort();
 }
 
+const TABLE_OVERRIDES = {
+  "114年第一次||神經疾病物理治療學||12":
+    "王爺爺身高165公分、體重75公斤，患有巴金森氏病（侯葉氏分期第三期），因摔倒骨折剛做過右側髖關節的全關節置換。下表為治療球的參考尺寸，依王爺爺的狀況，坐在那個尺寸充飽氣的治療球上進行姿勢平衡訓練最為恰當？\n| 身高（公分） | <153 | 153-170 | 171-191 | >191 |\n| 球直徑（公分） | 45 | 55 | 65 | 75 |",
+  "115年第一次||神經疾病物理治療學||77":
+    "下列何評估結果顯示有高跌倒風險？\n| 個案 | 量表 | 得分 |\n| 甲 | 阮柏氏測試（Romberg's test） | 32秒 |\n| 乙 | 柏格氏平衡量表（Berg balance scale） | 32分 |\n| 丙 | 三公尺計時起走測試（timed up-and-go test） | 25秒 |\n| 丁 | 緹氏表現導向行動評量（Tinetti performance-oriented mobility assessment） | 25分 |",
+};
+
 const rowRe = /<UL class='link_3'><LI><table[^>]*><tr>\s*<td><div>([^<]+)<\/div><\/td>([\s\S]*?)<\/tr><\/table>/g;
+const EXPLAINS_PATH = path.join(BASE, "option-explains.json");
+const optionExplainsMap = fs.existsSync(EXPLAINS_PATH)
+  ? JSON.parse(fs.readFileSync(EXPLAINS_PATH, "utf8"))
+  : {};
 const allQuestions = [];
 const jpxQueue = [];
 
@@ -454,11 +465,14 @@ for (const htmlPath of findExamHtmls(BANK_ROOT)) {
         subject,
         num,
         q: item.q,
+        q: TABLE_OVERRIDES[`${exam}||${subject}||${num}`] || item.q,
         options: item.options,
         answer: mod ? mod.answers[0] : "ABCD".indexOf(ch),
         explain: mod ? mod.explain : "",
       };
       if (mod) qObj.answers = mod.answers;
+      const optExplains = optionExplainsMap[`${exam}||${subject}||${num}`];
+      if (optExplains) qObj.optionExplains = optExplains;
       allQuestions.push(qObj);
     });
     console.log(`Parsed ${exam} ${imgPrefix} ${subject}: ${qs.length} 題`);
