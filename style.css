@@ -181,3 +181,39 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   padding: .3rem .8rem;
   font-size: .85rem;
 }
+.gemini-bar {
+  margin-top: .55rem;
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.gemini-btn {
+  padding: .38rem .85rem;
+  font-size: .88rem;
+  border-radius: 6px;
+  background: #1a73e8;
+  color: #fff;
+  border: 0;
+  cursor: pointer;
+}
+.gemini-btn:hover {
+  background: #1558b0;
+}
+.gemini-btn.secondary {
+  background: #6b768f;
+  padding: .38rem .75rem;
+  font-size: .85rem;
+}
+.gemini-btn.secondary:hover {
+  background: #555f75;
+}
+.gemini-btn.copied {
+  background: #2e8b57;
+}
+.wrong-meta-actions {
+  display: flex;
+  gap: .4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}

@@ -287,6 +287,83 @@ function startQuiz(mode = "normal") {
   window.scrollTo(0, 0);
 }
 
+function stripImgTags(s) {
+  return String(s ?? "").replace(/\[IMG(?:_INLINE)?:([^\]]+)\]/g, "（附圖：$1）").trim();
+}
+
+function buildGeminiPrompt(q, chosen) {
+  const ansIndices = q.answers || [q.answer];
+  const ok = chosen !== undefined && chosen !== null
+    ? (q.answers ? q.answers.includes(chosen) : chosen === q.answer)
+    : null;
+  const source = [q.exam, q.subject, q.num ? `第 ${q.num} 題` : ""].filter(Boolean).join("・");
+  const lines = ["【物理治療師國考題請益】"];
+  if (source) lines.push(`出處：${source}`);
+  if (q.prevQ && !q.q.includes("【前題題幹】")) {
+    lines.push(`【前題題幹】\n${stripImgTags(q.prevQ)}`);
+  }
+  lines.push(`題目：\n${stripImgTags(q.q)}`);
+  lines.push(
+    "選項：\n" +
+      q.options.map((opt, j) => `(${"ABCDEFGH"[j]}) ${stripImgTags(opt)}`).join("\n")
+  );
+  if (chosen !== undefined && chosen !== null && q.options[chosen] !== undefined) {
+    lines.push(`我的作答：(${"ABCDEFGH"[chosen]}) ${stripImgTags(q.options[chosen])}（${ok ? "答對" : "答錯"}）`);
+  }
+  const ansText = ansIndices.map((a) => `(${"ABCDEFGH"[a]}) ${stripImgTags(q.options[a])}`).join(" 或 ");
+  lines.push(`正確答案：${ansText}${q.explain ? `（${q.explain}）` : ""}`);
+  lines.push("請幫我詳細解析這題的核心觀念、正確答案的判斷依據，以及各個選項正確或錯誤的原因。");
+  return lines.join("\n\n");
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {}
+  document.body.removeChild(ta);
+  return ok;
+}
+
+async function askGeminiWithQuestion(q, chosen, btnEl, target = "aiMode") {
+  const promptText = buildGeminiPrompt(q, chosen);
+  const copied = await copyTextToClipboard(promptText);
+  const url = target === "geminiApp"
+    ? `https://gemini.google.com/app?q=${encodeURIComponent(promptText)}`
+    : `https://www.google.com/search?udm=50&q=${encodeURIComponent(promptText)}`;
+  if (btnEl) {
+    const orig = btnEl.dataset.origLabel || btnEl.textContent;
+    btnEl.dataset.origLabel = orig;
+    if (target === "geminiApp") {
+      btnEl.textContent = copied ? "✔ 已複製題目！請於 Gemini 按 Ctrl+V 貼上" : "⚠ 自動複製失敗，請手動複製題目";
+    } else {
+      btnEl.textContent = copied ? "✔ 已自動帶入題目詢問 Gemini！（亦已複製至剪貼簿）" : "✔ 已自動帶入題目詢問 Gemini！";
+    }
+    btnEl.classList.add("copied");
+    clearTimeout(btnEl._timer);
+    btnEl._timer = setTimeout(() => {
+      btnEl.textContent = orig;
+      btnEl.classList.remove("copied");
+    }, 3000);
+  }
+  window.open(url, "_blank", "noopener");
+}
+
 function submit(e) {
   e.preventDefault();
   let correct = 0;
@@ -294,6 +371,7 @@ function submit(e) {
   picked.forEach((q, i) => {
     const box = $(`q${i}`);
     const chosen = +box.querySelector("input:checked").value;
+    q.chosen = chosen;
     const ok = q.answers ? q.answers.includes(chosen) : chosen === q.answer;
     if (ok) correct++;
     const rawQ = q.rawQ || q;
@@ -320,7 +398,11 @@ function submit(e) {
     });
 
     ex.innerHTML = `${ok ? "✔ 答對" : "✘ 答錯，正確答案：" + ansLabel}${q.explain ? "｜" + esc(q.explain) : ""}` +
-      (source ? `<div class="q-source">出處：${esc(source)}</div>` : "");
+      (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
+      `<div class="gemini-bar">` +
+      `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">✨ 問問 Gemini（自動帶入詢問）</button>` +
+      `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
+      `</div>`;
     ex.hidden = false;
   });
   renderWrongBook();
@@ -406,7 +488,11 @@ function renderWrongBook() {
       <div class="wrong-card">
         <div class="wrong-meta">
           <span>${esc(source)}｜錯 ${q.wrongCount || 1} 次${q.lastTime ? `｜${esc(q.lastTime)}` : ""}</span>
-          <button type="button" class="secondary wrong-remove" data-key="${esc(key)}">移出</button>
+          <div class="wrong-meta-actions">
+            <button type="button" class="gemini-btn wrong-gemini" data-key="${esc(key)}" data-target="aiMode">✨ 問問 Gemini（自動帶入）</button>
+            <button type="button" class="gemini-btn secondary wrong-gemini" data-key="${esc(key)}" data-target="geminiApp">Gemini App（複製貼上）</button>
+            <button type="button" class="secondary wrong-remove" data-key="${esc(key)}">移出</button>
+          </div>
         </div>
         <div class="q-title">${fmt(q.q)}</div>
         ${q.options.map((opt, j) => {
@@ -461,6 +547,17 @@ $("clearWrong").onclick = () => {
 };
 
 $("wrongList").onclick = (e) => {
+  const gemBtn = e.target.closest(".wrong-gemini");
+  if (gemBtn) {
+    let q = loadWrongBook().find((item) => getQKey(item) === gemBtn.dataset.key);
+    if (q && /[承呈同依]上題/.test(q.q) && !q.prevQ && !q.q.includes("【前題題幹】")) {
+      const idx = all.findIndex((x) => getQKey(x) === getQKey(q));
+      const prev = idx > 0 ? all[idx - 1] : null;
+      if (prev && prev.exam === q.exam && prev.subject === q.subject) q = { ...q, prevQ: prev.q };
+    }
+    if (q) askGeminiWithQuestion(q, null, gemBtn, gemBtn.dataset.target || "aiMode");
+    return;
+  }
   const btn = e.target.closest(".wrong-remove");
   if (!btn) return;
   removeWrongQuestion(btn.dataset.key);
@@ -470,6 +567,12 @@ $("wrongList").onclick = (e) => {
 $("start").onclick = () => startQuiz("normal");
 $("startWrong").onclick = () => startQuiz("wrong");
 $("quiz").onsubmit = submit;
+$("quiz").onclick = (e) => {
+  const btn = e.target.closest(".gemini-btn");
+  if (!btn) return;
+  const q = picked[+btn.dataset.qidx];
+  if (q) askGeminiWithQuestion(q, q.chosen, btn, btn.dataset.target || "aiMode");
+};
 $("retry").onclick = () => {
   if (lastMode === "wrong" && !loadWrongBook().length) {
     alert("錯題已全部移出錯題簿！");
