@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>國考隨機抽題測驗</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>國考隨機抽題測驗</h1>
+
+    <div class="bank">
+      <label for="apiKey">AI 錯題解析金鑰</label>
+      <input id="apiKey" type="password" placeholder="貼上 Gemini (AIza... / AQ....)、OpenAI (sk-...) 或 Groq (gsk_...) API Key" />
+    </div>
+
+    <section id="setup">
+      <div class="row">
+        <label>年分
+          <select id="exam"></select>
+        </label>
+        <label>科目
+          <select id="subject"></select>
+        </label>
+        <label>題數
+          <input id="count" type="number" min="1" value="10" />
+        </label>
+        <label class="inline"><input id="mixOptions" type="checkbox" checked /> 選項順序也打亂</label>
+        <button id="start">開始抽題</button>
+      </div>
+
+      <div class="bank">
+        <span id="bankInfo"></span>
+        <label class="file">匯入 CSV 題庫<input id="csvFile" type="file" accept=".csv" hidden /></label>
+        <button id="resetBank" class="secondary">使用考畢題答題庫</button>
+        <a href="template.csv" download>下載 CSV 範本</a>
+      </div>
+
+      <div id="history" hidden>
+        <h3>最近成績</h3>
+        <table>
+          <thead><tr><th>時間</th><th>科目</th><th>答對</th><th>分數</th></tr></thead>
+          <tbody id="historyList"></tbody>
+        </table>
+        <button id="clearHistory" class="secondary">清除紀錄</button>
+      </div>
+    </section>
+
+    <form id="quiz" hidden></form>
+
+    <section id="result" hidden>
+      <h2 id="score"></h2>
+      <button id="retry">再抽一次</button>
+      <button id="aiAll" type="button" hidden>AI 解析全部錯題</button>
+    </section>
+  </main>
+
+  <script src="questions.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
