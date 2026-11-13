@@ -91,6 +91,7 @@ function esc(s) {
 
 function fmt(s) {
   return esc(s)
+    .replace(/(\[IMG:[^\]]+\])(?:\s*\[IMG:[^\]]+\])+/g, "$1")
     .replace(/(?:^|\n)((?:\|[^\n]+\|(?:\n|$))+)/g, (_, block) => {
       const rows = block
         .trim()

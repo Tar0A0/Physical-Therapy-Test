@@ -185,7 +185,7 @@ function extractImages(objs, code, jpxQueue) {
     const outPath = path.join(IMG_DIR, file);
     if (isJpx) {
       jpxQueue.push({ jp2Buf: o.raw, w, h, outPath });
-    } else {
+    } else if (!fs.existsSync(outPath)) {
       const data = isJpg ? o.raw : rgbToPng(zlib.inflateSync(o.raw), w, h);
       if (!data.length) throw new Error(`Empty image extracted: ${file}`);
       fs.writeFileSync(outPath, data);
@@ -423,6 +423,10 @@ const TABLE_OVERRIDES = {
     "下列何評估結果顯示有高跌倒風險？\n| 個案 | 量表 | 得分 |\n| 甲 | 阮柏氏測試（Romberg's test） | 32秒 |\n| 乙 | 柏格氏平衡量表（Berg balance scale） | 32分 |\n| 丙 | 三公尺計時起走測試（timed up-and-go test） | 25秒 |\n| 丁 | 緹氏表現導向行動評量（Tinetti performance-oriented mobility assessment） | 25分 |",
 };
 
+function collapseImgStrips(str) {
+  return str.replace(/(\[IMG:[^\]]+\])(?:\s*\[IMG:[^\]]+\])+/g, "$1");
+}
+
 const rowRe = /<UL class='link_3'><LI><table[^>]*><tr>\s*<td><div>([^<]+)<\/div><\/td>([\s\S]*?)<\/tr><\/table>/g;
 const EXPLAINS_PATH = path.join(BASE, "option-explains.json");
 const optionExplainsMap = fs.existsSync(EXPLAINS_PATH)
@@ -464,9 +468,8 @@ for (const htmlPath of findExamHtmls(BANK_ROOT)) {
         exam,
         subject,
         num,
-        q: item.q,
-        q: TABLE_OVERRIDES[`${exam}||${subject}||${num}`] || item.q,
-        options: item.options,
+        q: collapseImgStrips(TABLE_OVERRIDES[`${exam}||${subject}||${num}`] || item.q),
+        options: item.options.map(collapseImgStrips),
         answer: mod ? mod.answers[0] : "ABCD".indexOf(ch),
         explain: mod ? mod.explain : "",
       };
