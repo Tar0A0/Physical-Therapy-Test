@@ -66,6 +66,7 @@
 | `style.css` | 題目卡片、表格（`.q-table`）、圖片（`.q-img`）、對錯選項與詳解區塊（`.opt-note`）樣式 |
 | `option-explains.json` | 全題庫 2,880 題 × 4 選項（11,520 條）之繁體中文離線詳解來源檔 |
 | `build-bank.js` | 解析考選部試題與更正答案 PDF、合併 `TABLE_OVERRIDES` 與 `option-explains.json`、生成 `questions.js` |
+| `sync-moex.js` | 自動串聯考選部考畢試題查詢平臺（`wFrmExamQandASearch.aspx`）與 OpenData CSV，下載物理治療師試題／答案／更正答案並呼叫 `build-bank.js` 更新題庫 |
 | `questions.js` | 網頁實際載入的完整題庫資料（`window.QUESTIONS`） |
 | `img/` | 題目與選項附圖（已完成水平條帶拼接與深灰黑框裁切） |
 
@@ -75,3 +76,15 @@
 node build-bank.js
 ```
 執行後會自動保留 `img/` 中已處理完成的圖片，並重新輸出完整的 `questions.js`。
+
+### 自動串聯考選部 OpenData / 考畢試題平臺指令
+直接指定考選部網址、考試代碼、年度或 OpenData CSV 自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建 `questions.js`：
+```powershell
+node sync-moex.js "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090"
+# 亦支援年度自動探索、OpenData CSV 或整合 build-bank.js --sync：
+node sync-moex.js --year 114
+node sync-moex.js --opendata
+node build-bank.js --sync "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090"
+# 啟動本地同步伺服器（支援於網頁介面上直接一鍵同步）：
+node sync-moex.js --serve
+```

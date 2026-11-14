@@ -217,3 +217,47 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   align-items: center;
   flex-wrap: wrap;
 }
+.moex-sync-panel {
+  margin-top: .85rem;
+  padding: .85rem 1rem;
+  background: #f4f7fb;
+  border: 1px solid #d7e2f2;
+  border-radius: 8px;
+}
+.moex-sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  align-items: flex-end;
+}
+.moex-url-label {
+  flex: 1 1 320px;
+  font-size: .85rem;
+  color: #445;
+  gap: .25rem;
+}
+.moex-url-label input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: .92rem;
+  padding: .45rem .65rem;
+  border: 1px solid #ccd;
+  border-radius: 6px;
+}
+.moex-sync-row a {
+  font-size: .88rem;
+  color: #2b5ce6;
+  padding: .45rem .2rem;
+}
+.moex-status {
+  margin: .55rem 0 0;
+  font-size: .86rem;
+  color: #4a5568;
+  line-height: 1.5;
+}
+.moex-status.ok {
+  color: #216e43;
+}
+.moex-status.err {
+  color: #b42318;
+}

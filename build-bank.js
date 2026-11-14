@@ -89,19 +89,31 @@ function unescapePdfStr(s) {
 function decodePdfText(hex, rawStr, curFont) {
   let txt = "";
   if (hex) {
-    if (curFont) for (let i = 0; i < hex.length; i += 4) txt += curFont[parseInt(hex.slice(i, i + 4), 16)] ?? "";
-    else for (let i = 0; i < hex.length; i += 2) txt += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    const step = !curFont || curFont._oneByte ? 2 : 4;
+    for (let i = 0; i < hex.length; i += step) {
+      const v = parseInt(hex.slice(i, i + step), 16);
+      txt += curFont ? (curFont[v] ?? "") : String.fromCharCode(v);
+    }
   } else if (rawStr !== undefined) {
     const bytes = unescapePdfStr(rawStr);
-    if (curFont) for (let i = 0; i < bytes.length; i += 2) txt += curFont[(bytes[i] << 8) | bytes[i + 1]] ?? "";
-    else txt = Buffer.from(bytes).toString("latin1");
+    if (curFont) {
+      if (curFont._oneByte) {
+        for (let i = 0; i < bytes.length; i++) txt += curFont[bytes[i]] ?? "";
+      } else {
+        for (let i = 0; i < bytes.length; i += 2) txt += curFont[(bytes[i] << 8) | bytes[i + 1]] ?? "";
+      }
+    } else txt = Buffer.from(bytes).toString("latin1");
   }
-  return txt;
+  return txt.replace(/[\u2E80-\u2FD5]/g, (c) => ({ "\u2EA0": "民", "\u2EC4": "西", "\u2ED1": "長" }[c] || c.normalize("NFKC")));
 }
 
 function parsePdfObjects(filePath) {
   const buf = fs.readFileSync(filePath);
   const str = buf.toString("latin1");
+  const intObjs = {};
+  for (const im of str.matchAll(/(\d+)\s+0\s+obj\s+(\d+)\s+endobj/g)) {
+    intObjs[im[1]] = parseInt(im[2], 10);
+  }
   const objs = {};
   for (const m of str.matchAll(/(\d+)\s+0\s+obj\b([\s\S]*?)endobj/g)) {
     const id = m[1];
@@ -116,12 +128,17 @@ function parsePdfObjects(filePath) {
       if (str[dataEnd - 1] === "\n") dataEnd--;
       if (str[dataEnd - 1] === "\r") dataEnd--;
       const lenMatch = dict.match(/\/Length\s+(\d+)\b(?!\s+0\s+R)/);
-      const raw = lenMatch ? buf.subarray(dataStart, dataStart + parseInt(lenMatch[1], 10)) : buf.subarray(dataStart, dataEnd);
+      const refLenMatch = dict.match(/\/Length\s+(\d+)\s+0\s+R/);
+      const exactLen = lenMatch ? parseInt(lenMatch[1], 10) : (refLenMatch ? intObjs[refLenMatch[1]] : null);
+      const raw = exactLen ? buf.subarray(dataStart, dataStart + exactLen) : buf.subarray(dataStart, dataEnd);
       const isImg = /\/Subtype\s*\/Image/.test(dict);
       let stream = "";
       if (!isImg) {
         if (dict.includes("FlateDecode")) {
-          try { stream = zlib.inflateSync(raw).toString("latin1"); } catch {}
+          try { stream = zlib.inflateSync(raw).toString("latin1"); }
+          catch {
+            try { stream = zlib.inflateSync(buf.subarray(dataStart, dataEnd)).toString("latin1"); } catch {}
+          }
         } else {
           stream = raw.toString("latin1");
         }
@@ -153,6 +170,8 @@ function buildFontCmaps(objs) {
   for (const [id, o] of Object.entries(objs)) {
     if (!o.stream.includes("begincmap")) continue;
     const map = {};
+    const csRange = o.stream.match(/begincodespacerange[\s\S]*?<([0-9A-Fa-f]+)>\s*<[0-9A-Fa-f]+>/);
+    if (csRange && csRange[1].length <= 2) map._oneByte = true;
     for (const bm of o.stream.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
       for (const pair of bm[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g)) {
         map[parseInt(pair[1], 16)] = String.fromCodePoint(parseInt(pair[2], 16));
@@ -180,25 +199,233 @@ function buildFontCmaps(objs) {
   return fontObjToCmap;
 }
 
+function unfilterPngRows(inf, rowBytes, h, bpp) {
+  const stride = rowBytes + 1;
+  const out = Buffer.alloc(rowBytes * h);
+  for (let y = 0; y < h; y++) {
+    const filter = inf[y * stride];
+    const srcStart = y * stride + 1;
+    const dstStart = y * rowBytes;
+    for (let x = 0; x < rowBytes; x++) {
+      const raw = inf[srcStart + x];
+      const a = x >= bpp ? out[dstStart + x - bpp] : 0;
+      const b = y > 0 ? out[dstStart - rowBytes + x] : 0;
+      const c = (y > 0 && x >= bpp) ? out[dstStart - rowBytes + x - bpp] : 0;
+      let val = raw;
+      if (filter === 1) val = (raw + a) & 0xff;
+      else if (filter === 2) val = (raw + b) & 0xff;
+      else if (filter === 3) val = (raw + ((a + b) >> 1)) & 0xff;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        const pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+        val = (raw + pr) & 0xff;
+      }
+      out[dstStart + x] = val;
+    }
+  }
+  return out;
+}
+
+function extractIndexedPalette(o, objs) {
+  const csRef = o.dict.match(/\/ColorSpace\s+(\d+)\s+0\s+R/);
+  const csStr = csRef && objs[csRef[1]] ? objs[csRef[1]].dict : o.dict;
+  if (!csStr.includes("/Indexed")) return null;
+  const pm = csStr.match(/\(((?:\\.|[^\\()])*)\)\s*\]/);
+  if (pm) return Buffer.from(unescapePdfStr(pm[1]));
+  const hm = csStr.match(/<([0-9A-Fa-f\s]+)>\s*\]/);
+  return hm ? Buffer.from(hm[1].replace(/\s+/g, ""), "hex") : null;
+}
+
+function buildCcittTree(pairs) {
+  const root = {};
+  for (const [bits, run] of pairs) {
+    let node = root;
+    for (const ch of bits) {
+      node = node[ch] || (node[ch] = {});
+    }
+    node.val = run;
+  }
+  return root;
+}
+
+const CCITT_2D_TREE = buildCcittTree([
+  ["0001", "P"], ["001", "H"], ["1", "V0"],
+  ["011", "VR1"], ["000011", "VR2"], ["0000011", "VR3"],
+  ["010", "VL1"], ["000010", "VL2"], ["0000010", "VL3"],
+  ["0000001", "EXT"], ["000000000001", "EOF"],
+]);
+
+const CCITT_WHITE_TREE = buildCcittTree([
+  ["00110101", 0], ["000111", 1], ["0111", 2], ["1000", 3], ["1011", 4], ["1100", 5],
+  ["1110", 6], ["1111", 7], ["10011", 8], ["10100", 9], ["00111", 10], ["01000", 11],
+  ["001000", 12], ["000011", 13], ["110100", 14], ["110101", 15], ["101010", 16],
+  ["101011", 17], ["0100111", 18], ["0001100", 19], ["0001000", 20], ["0010111", 21],
+  ["0000011", 22], ["0000100", 23], ["0101000", 24], ["0101011", 25], ["0010011", 26],
+  ["0100100", 27], ["0011000", 28], ["00000010", 29], ["00000011", 30], ["00011010", 31],
+  ["00011011", 32], ["00010010", 33], ["00010011", 34], ["00010100", 35], ["00010101", 36],
+  ["00010110", 37], ["00010111", 38], ["00101000", 39], ["00101001", 40], ["00101010", 41],
+  ["00101011", 42], ["00101100", 43], ["00101101", 44], ["00000100", 45], ["00000101", 46],
+  ["00001010", 47], ["00001011", 48], ["01010010", 49], ["01010011", 50], ["01010100", 51],
+  ["01010101", 52], ["00100100", 53], ["00100101", 54], ["01011000", 55], ["01011001", 56],
+  ["01011010", 57], ["01011011", 58], ["01001010", 59], ["01001011", 60], ["00110010", 61],
+  ["00110011", 62], ["00110100", 63],
+  ["11011", 64], ["10010", 128], ["010111", 192], ["0110111", 256], ["00110110", 320],
+  ["00110111", 384], ["01100100", 448], ["01100101", 512], ["01101000", 576], ["01100111", 640],
+  ["011001100", 704], ["011001101", 768], ["011010010", 832], ["011010011", 896], ["011010100", 960],
+  ["011010101", 1024], ["011010110", 1088], ["011010111", 1152], ["011011000", 1216], ["011011001", 1280],
+  ["011011010", 1344], ["011011011", 1408], ["010011000", 1472], ["010011001", 1536], ["010011010", 1600],
+  ["011000", 1664], ["010011011", 1728],
+  ["00000001000", 1792], ["00000001100", 1856], ["00000001101", 1920], ["000000010010", 1984],
+  ["000000010011", 2048], ["000000010100", 2112], ["000000010101", 2176], ["000000010110", 2240],
+  ["000000010111", 2304], ["000000011100", 2368], ["000000011101", 2432], ["000000011110", 2496],
+  ["000000011111", 2560],
+]);
+
+const CCITT_BLACK_TREE = buildCcittTree([
+  ["0000110111", 0], ["010", 1], ["11", 2], ["10", 3], ["011", 4], ["0011", 5],
+  ["0010", 6], ["00011", 7], ["000101", 8], ["000100", 9], ["0000100", 10], ["0000101", 11],
+  ["0000111", 12], ["00000100", 13], ["00000111", 14], ["000011000", 15], ["0000010111", 16],
+  ["0000011000", 17], ["0000001000", 18], ["00001100111", 19], ["00001101000", 20],
+  ["00001101100", 21], ["00000110111", 22], ["00000101000", 23], ["00000010111", 24],
+  ["00000011000", 25], ["000011001010", 26], ["000011001011", 27], ["000011001100", 28],
+  ["000011001101", 29], ["000001101000", 30], ["000001101001", 31], ["000001101010", 32],
+  ["000001101011", 33], ["000011010010", 34], ["000011010011", 35], ["000011010100", 36],
+  ["000011010101", 37], ["000011010110", 38], ["000011010111", 39], ["000001101100", 40],
+  ["000001101101", 41], ["000011011010", 42], ["000011011011", 43], ["000001010100", 44],
+  ["000001010101", 45], ["000001010110", 46], ["000001010111", 47], ["000001100100", 48],
+  ["000001100101", 49], ["000001010010", 50], ["000001010011", 51], ["000000100100", 52],
+  ["000000110111", 53], ["000000111000", 54], ["000000100111", 55], ["000000101000", 56],
+  ["000001011000", 57], ["000001011001", 58], ["000000101011", 59], ["000000101100", 60],
+  ["000001011010", 61], ["000001100110", 62], ["000001100111", 63],
+  ["0000001111", 64], ["000011001000", 128], ["000011001001", 192], ["000001011011", 256],
+  ["000000110011", 320], ["000000110100", 384], ["000000110101", 448], ["0000001101100", 512],
+  ["0000001101101", 576], ["0000001001010", 640], ["0000001001011", 704], ["0000001001100", 768],
+  ["0000001001101", 832], ["0000001110010", 896], ["0000001110011", 960], ["0000001110100", 1024],
+  ["0000001110101", 1088], ["0000001110110", 1152], ["0000001110111", 1216], ["0000001010010", 1280],
+  ["0000001010011", 1344], ["0000001010100", 1408], ["0000001010101", 1472], ["0000001011010", 1536],
+  ["0000001011011", 1600], ["0000001100100", 1664], ["0000001100101", 1728],
+  ["00000001000", 1792], ["00000001100", 1856], ["00000001101", 1920], ["000000010010", 1984],
+  ["000000010011", 2048], ["000000010100", 2112], ["000000010101", 2176], ["000000010110", 2240],
+  ["000000010111", 2304], ["000000011100", 2368], ["000000011101", 2432], ["000000011110", 2496],
+  ["000000011111", 2560],
+]);
+
+function decodeCcittGroup4ToRgb(raw, w, h, dict) {
+  let bitPos = 0;
+  const totalBits = raw.length * 8;
+  const nextBit = () => (bitPos < totalBits ? (raw[bitPos >> 3] >> (7 - (bitPos++ & 7))) & 1 : -1);
+  const readSym = (tree) => {
+    let n = tree;
+    while (n && n.val === undefined) {
+      const b = nextBit();
+      if (b < 0) return null;
+      n = n[b];
+    }
+    return n ? n.val : null;
+  };
+  const readRun = (color) => {
+    const tree = color === 0 ? CCITT_WHITE_TREE : CCITT_BLACK_TREE;
+    let total = 0;
+    while (true) {
+      const v = readSym(tree);
+      if (v === null) return total;
+      total += v;
+      if (v < 64) return total;
+    }
+  };
+  const blackIs1 = /\/BlackIs1\s+true/.test(dict);
+  let refLine = new Uint8Array(w); // initial reference line: all white (0)
+  const rgb = Buffer.alloc(w * h * 3, 255);
+  const nextChange = (line, start, color) => {
+    let i = Math.max(0, start);
+    while (i < w && line[i] === color) i++;
+    return i;
+  };
+
+  for (let y = 0; y < h; y++) {
+    const curLine = new Uint8Array(w);
+    let a0 = -1, color = 0;
+    while (true) {
+      const pos = a0 < 0 ? 0 : a0;
+      if (pos >= w) break;
+      const mode = readSym(CCITT_2D_TREE);
+      if (mode === null || mode === "EOF") break;
+      let b1;
+      if (a0 < 0) {
+        b1 = nextChange(refLine, 0, color);
+      } else {
+        let p = a0;
+        if (refLine[p] !== color) p = nextChange(refLine, p, 1 - color);
+        b1 = nextChange(refLine, p, color);
+      }
+      const b2 = b1 < w ? nextChange(refLine, b1, 1 - color) : w;
+      if (mode === "P") {
+        curLine.fill(color, pos, Math.min(b2, w));
+        a0 = b2;
+      } else if (mode === "H") {
+        const r1 = readRun(color);
+        const r2 = readRun(1 - color);
+        const a1 = Math.min(pos + r1, w);
+        const a2 = Math.min(a1 + r2, w);
+        curLine.fill(color, pos, a1);
+        curLine.fill(1 - color, a1, a2);
+        a0 = a2;
+      } else if (mode === "EXT") {
+        bitPos += 3;
+        break;
+      } else {
+        const offset = mode === "V0" ? 0 : (mode.startsWith("VR") ? +mode[2] : -mode[2]);
+        const a1 = Math.max(pos, Math.min(b1 + offset, w));
+        curLine.fill(color, pos, a1);
+        a0 = a1;
+        color = 1 - color;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      const isBlack = blackIs1 ? curLine[x] === 0 : curLine[x] === 1;
+      if (isBlack) {
+        const idx = (y * w + x) * 3;
+        rgb[idx] = rgb[idx + 1] = rgb[idx + 2] = 0;
+      }
+    }
+    refLine = curLine;
+  }
+  return rgbToPng(rgb, w, h);
+}
+
 function decodeFlateImageToRgb(o, objs, w, h) {
-  const inf = zlib.inflateSync(o.raw);
+  let inf = zlib.inflateSync(o.raw);
+  const bpc = +(o.dict.match(/\/BitsPerComponent\s+(\d+)/)?.[1] || 8);
+  const pal = extractIndexedPalette(o, objs);
+  const isCmyk = /\/ColorSpace\s*\/DeviceCMYK/.test(o.dict);
+
+  if (inf.length === (w * 3 + 1) * h) inf = unfilterPngRows(inf, w * 3, h, 3);
+  else if (inf.length === (w * 4 + 1) * h) inf = unfilterPngRows(inf, w * 4, h, 4);
+  else if (inf.length === (w + 1) * h) inf = unfilterPngRows(inf, w, h, 1);
+  else if (inf.length === (Math.ceil(w / 2) + 1) * h) inf = unfilterPngRows(inf, Math.ceil(w / 2), h, 1);
+  else if (inf.length === (Math.ceil(w / 8) + 1) * h) inf = unfilterPngRows(inf, Math.ceil(w / 8), h, 1);
+
   let rgb;
   if (inf.length === w * h * 3) {
     rgb = Buffer.from(inf);
-  } else if (inf.length === w * h) {
+  } else if (inf.length === w * h * 4) {
     rgb = Buffer.alloc(w * h * 3);
-    let pal = null;
-    const csRef = o.dict.match(/\/ColorSpace\s+(\d+)\s+0\s+R/);
-    const csStr = csRef && objs[csRef[1]] ? objs[csRef[1]].dict : o.dict;
-    if (csStr.includes("/Indexed")) {
-      const pm = csStr.match(/\(((?:\\.|[^\\()])*)\)\s*\]/);
-      if (pm) {
-        pal = Buffer.from(unescapePdfStr(pm[1]));
+    for (let i = 0; i < w * h; i++) {
+      if (isCmyk) {
+        const c = inf[i * 4], m = inf[i * 4 + 1], y = inf[i * 4 + 2], k = inf[i * 4 + 3];
+        rgb[i * 3] = Math.round(((255 - c) * (255 - k)) / 255);
+        rgb[i * 3 + 1] = Math.round(((255 - m) * (255 - k)) / 255);
+        rgb[i * 3 + 2] = Math.round(((255 - y) * (255 - k)) / 255);
       } else {
-        const hm = csStr.match(/<([0-9A-Fa-f\s]+)>\s*\]/);
-        if (hm) pal = Buffer.from(hm[1].replace(/\s+/g, ""), "hex");
+        const a = inf[i * 4 + 3];
+        rgb[i * 3] = Math.round((inf[i * 4] * a + 255 * (255 - a)) / 255);
+        rgb[i * 3 + 1] = Math.round((inf[i * 4 + 1] * a + 255 * (255 - a)) / 255);
+        rgb[i * 3 + 2] = Math.round((inf[i * 4 + 2] * a + 255 * (255 - a)) / 255);
       }
     }
+  } else if (inf.length === w * h) {
+    rgb = Buffer.alloc(w * h * 3);
     for (let i = 0; i < w * h; i++) {
       const v = inf[i];
       if (pal && v * 3 + 2 < pal.length) {
@@ -209,12 +436,46 @@ function decodeFlateImageToRgb(o, objs, w, h) {
         rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v;
       }
     }
+  } else if (bpc === 4 && inf.length === Math.ceil(w / 2) * h) {
+    const stride = Math.ceil(w / 2);
+    rgb = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const byte = inf[y * stride + (x >> 1)];
+        const v = (x & 1) === 0 ? byte >> 4 : byte & 0x0f;
+        const idx = (y * w + x) * 3;
+        if (pal && v * 3 + 2 < pal.length) {
+          rgb[idx] = pal[v * 3];
+          rgb[idx + 1] = pal[v * 3 + 1];
+          rgb[idx + 2] = pal[v * 3 + 2];
+        } else {
+          rgb[idx] = rgb[idx + 1] = rgb[idx + 2] = v * 17;
+        }
+      }
+    }
+  } else if (bpc === 1 && inf.length === Math.ceil(w / 8) * h) {
+    const stride = Math.ceil(w / 8);
+    rgb = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const bit = (inf[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1;
+        const idx = (y * w + x) * 3;
+        if (pal && bit * 3 + 2 < pal.length) {
+          rgb[idx] = pal[bit * 3];
+          rgb[idx + 1] = pal[bit * 3 + 1];
+          rgb[idx + 2] = pal[bit * 3 + 2];
+        } else {
+          rgb[idx] = rgb[idx + 1] = rgb[idx + 2] = bit ? 255 : 0;
+        }
+      }
+    }
   } else {
     throw new Error(`Unsupported Flate image buffer length ${inf.length} for ${w}x${h}`);
   }
   const smRef = o.dict.match(/\/SMask\s+(\d+)\s+0\s+R/);
   if (smRef && objs[smRef[1]]?.raw) {
-    const mask = zlib.inflateSync(objs[smRef[1]].raw);
+    let mask = zlib.inflateSync(objs[smRef[1]].raw);
+    if (mask.length === (w + 1) * h) mask = unfilterPngRows(mask, w, h, 1);
     if (mask.length === w * h) {
       for (let i = 0; i < w * h; i++) {
         const a = mask[i];
@@ -242,11 +503,18 @@ function extractImages(objs, code, jpxQueue) {
     const h = +(o.dict.match(/\/Height\s+(\d+)/)?.[1] || 0);
     const isJpx = o.dict.includes("JPXDecode");
     const isJpg = o.dict.includes("DCTDecode");
+    const isCcitt = o.dict.includes("CCITTFaxDecode");
     const ext = isJpg ? "jpg" : "png";
     const file = `${code}_${id}.${ext}`;
     const outPath = path.join(IMG_DIR, file);
     if (isJpx) {
       jpxQueue.push({ jp2Buf: o.raw, w, h, outPath });
+    } else if (isCcitt) {
+      if (!fs.existsSync(outPath)) {
+        const data = decodeCcittGroup4ToRgb(o.raw, w, h, o.dict);
+        if (!data.length) throw new Error(`Empty image extracted: ${file}`);
+        fs.writeFileSync(outPath, data);
+      }
     } else if (!isJpg) {
       const data = decodeFlateImageToRgb(o, objs, w, h);
       if (!data) continue;
@@ -342,33 +610,43 @@ function extractQuestionText(filePath, code, jpxQueue) {
         const imgObjId = localImgs[tm[15]] || tm[15].replace(/^[XR]/, "");
         const tag = imgTags[imgObjId];
         if (!tag) continue;
+        const isInlineImg = Math.abs(ctm[0]) > 0 && Math.abs(ctm[0]) <= 45 && Math.abs(ctm[3]) > 0 && Math.abs(ctm[3]) <= 24;
+        const finalTag = isInlineImg ? tag.replace(/^\[IMG:/, "[IMG_INLINE:") : tag;
         const x = ctm[4];
-        const yTop = ctm[3] < 0 ? 842 - ctm[5] : 842 - (ctm[5] + ctm[3] * 0.5);
+        const yTop = isInlineImg
+          ? 842 - (ctm[5] + ctm[3] * 0.25)
+          : (ctm[3] < 0 ? 842 - ctm[5] : 842 - (ctm[5] + ctm[3] * 0.5));
         const key = `IMG_${imgObjId}_${Math.round(x)}_${Math.round(yTop)}`;
         if (!seen.has(key)) {
           seen.add(key);
-          pageItems.push({ x, y: yTop, txt: tag });
+          pageItems.push({ x, y: yTop, txt: finalTag });
         }
       }
     }
 
-    pageItems.sort((a, b) => Math.abs(a.y - b.y) > 3 ? a.y - b.y : a.x - b.x);
-    let lastY = null, lastX = null, lastLen = 0, line = "";
+    pageItems.sort((a, b) => a.y - b.y || a.x - b.x);
+    const lineGroups = [];
     for (const it of pageItems) {
-      if (lastY !== null && Math.abs(it.y - lastY) > 3) {
-        if (line.trim()) allLines.push(line.trim());
-        line = it.txt;
+      const curGroup = lineGroups[lineGroups.length - 1];
+      if (!curGroup || it.y - curGroup[curGroup.length - 1].y > 6) {
+        lineGroups.push([it]);
       } else {
+        curGroup.push(it);
+      }
+    }
+    for (const grp of lineGroups) {
+      grp.sort((a, b) => a.x - b.x);
+      let lastX = null, lastLen = 0, line = "";
+      for (const it of grp) {
         const t = it.txt.trim();
-        if (t.length >= 3 && line.includes(t)) { lastX = it.x; lastY = it.y; lastLen = it.txt.length; continue; }
+        if (t.length >= 3 && line.includes(t)) { lastX = it.x; lastLen = it.txt.length; continue; }
         if (lastX !== null && lastLen <= 6 && it.x - lastX > 22 && line && !line.endsWith(" ")) line += " ";
         line += it.txt;
+        lastX = it.x;
+        lastLen = it.txt.length;
       }
-      lastY = it.y;
-      lastX = it.x;
-      lastLen = it.txt.length;
+      if (line.trim()) allLines.push(line.trim());
     }
-    if (line.trim()) allLines.push(line.trim());
   }
   return allLines.join("\n");
 }
@@ -465,13 +743,13 @@ function parseAnswers(text) {
   const note = full2half((text.match(/備\s*註：([\s\S]*)/)?.[1] || "").trim());
   const modRules = {};
   if (note) {
-    for (const m of note.matchAll(/第(\d+)題(?:答([A-D或]+?)(?:者均)?給分|[^\d]*(?:一律給分|均給分))/g)) {
-      const qNum = +m[1];
-      if (m[2]) {
-        const letters = [...new Set(m[2].match(/[A-D]/g))].map((c) => "ABCD".indexOf(c));
-        modRules[qNum] = { answers: letters, explain: `考選部更正答案：${m[0]}` };
-      } else {
-        modRules[qNum] = { answers: [0, 1, 2, 3], explain: `考選部更正答案：${m[0]}` };
+    for (const m of note.matchAll(/第(\d+(?:[、，,及與或]\s*(?:第)?\d+)*)題(?:答([A-D或、，,及與\s]+?)(?:者)?(?:均)?給分|[^\d第]*(?:一律給分|均給分|送分))/g)) {
+      const qNums = m[1].match(/\d+/g).map(Number);
+      const answers = m[2]
+        ? [...new Set(m[2].match(/[A-D]/g) || [])].map((c) => "ABCD".indexOf(c))
+        : [0, 1, 2, 3];
+      for (const qNum of qNums) {
+        modRules[qNum] = { answers, explain: `考選部更正答案：${m[0]}` };
       }
     }
   }
@@ -501,67 +779,96 @@ function collapseImgStrips(str) {
 
 const rowRe = /<UL class='link_3'><LI><table[^>]*><tr>\s*<td><div>([^<]+)<\/div><\/td>([\s\S]*?)<\/tr><\/table>/g;
 const EXPLAINS_PATH = path.join(BASE, "option-explains.json");
-const optionExplainsMap = fs.existsSync(EXPLAINS_PATH)
-  ? JSON.parse(fs.readFileSync(EXPLAINS_PATH, "utf8"))
-  : {};
-const allQuestions = [];
-const jpxQueue = [];
 
-for (const htmlPath of findExamHtmls(BANK_ROOT)) {
-  const htmlDir = path.dirname(htmlPath);
-  const relParts = path.relative(BANK_ROOT, htmlDir).split(path.sep);
-  const exam = (relParts[0].match(/^\d+年第[一二三四]次/)?.[0]) || relParts[0];
-  const html = fs.readFileSync(htmlPath, "utf8");
+function buildBank() {
+  const optionExplainsMap = fs.existsSync(EXPLAINS_PATH)
+    ? JSON.parse(fs.readFileSync(EXPLAINS_PATH, "utf8"))
+    : {};
+  const allQuestions = [];
+  const jpxQueue = [];
 
-  for (const rm of html.matchAll(rowRe)) {
-    const subject = rm[1].trim();
-    const links = rm[2];
-    const qPdf = links.match(/href='([^']+)'[^>]*>試題<\/a>/)?.[1];
-    const ansPdf = links.match(/href='([^']+)'[^>]*>答案<\/a>/)?.[1];
-    const modPdf = links.match(/href='([^']+)'[^>]*>更正答案<\/a>/)?.[1];
-    const examCode = qPdf?.match(/^(\d+)_/)?.[1];
-    const code = qPdf?.match(/_(\d{2,4})_/)?.[1];
-    if (!qPdf || !ansPdf || !examCode || !code) throw new Error(`Invalid row in ${htmlPath} for ${subject}`);
+  for (const htmlPath of findExamHtmls(BANK_ROOT)) {
+    const htmlDir = path.dirname(htmlPath);
+    const relParts = path.relative(BANK_ROOT, htmlDir).split(path.sep);
+    const exam = (relParts[0].match(/^\d+年第[一二三四]次/)?.[0]) || relParts[0];
+    const html = fs.readFileSync(htmlPath, "utf8");
 
-    const imgPrefix = `${examCode}_${code}`;
-    const qs = parseQuestions(extractQuestionText(path.join(htmlDir, qPdf), imgPrefix, jpxQueue));
-    const { ans, modRules } = parseAnswers(extractAnswerText(path.join(htmlDir, modPdf || ansPdf)));
-    if (qs.length !== 80 || ans.length !== 80) {
-      throw new Error(`Count mismatch for ${exam} ${subject}: qs=${qs.length}, ans=${ans.length}`);
+    for (const rm of html.matchAll(rowRe)) {
+      const subject = rm[1].trim();
+      const links = rm[2];
+      const qPdf = links.match(/href='([^']+)'[^>]*>試題<\/a>/)?.[1];
+      const ansPdf = links.match(/href='([^']+)'[^>]*>答案<\/a>/)?.[1];
+      const modPdf = links.match(/href='([^']+)'[^>]*>更正答案<\/a>/)?.[1];
+      const examCode = qPdf?.match(/^(\d+)_/)?.[1];
+      const code = qPdf?.match(/_(\d{2,4})_/)?.[1];
+      if (!qPdf || !ansPdf || !examCode || !code) throw new Error(`Invalid row in ${htmlPath} for ${subject}`);
+
+      const imgPrefix = `${examCode}_${code}`;
+      const qs = parseQuestions(extractQuestionText(path.join(htmlDir, qPdf), imgPrefix, jpxQueue));
+      const { ans, modRules } = parseAnswers(extractAnswerText(path.join(htmlDir, modPdf || ansPdf)));
+      if (qs.length !== 80 || ans.length !== 80) {
+        throw new Error(`Count mismatch for ${exam} ${subject}: qs=${qs.length}, ans=${ans.length}`);
+      }
+
+      qs.forEach((item, idx) => {
+        const num = idx + 1;
+        if (item.options.length !== 4) throw new Error(`${exam} ${subject} Q${num} options=${item.options.length}`);
+        const ch = ans[idx];
+        const mod = modRules[num];
+        if (ch === "#" && !mod) throw new Error(`${exam} ${subject} Q${num} marked # without MOD rule`);
+        const qObj = {
+          exam,
+          subject,
+          num,
+          q: collapseImgStrips(TABLE_OVERRIDES[`${exam}||${subject}||${num}`] || item.q),
+          options: item.options.map(collapseImgStrips),
+          answer: mod ? mod.answers[0] : "ABCD".indexOf(ch),
+          explain: mod ? mod.explain : "",
+        };
+        if (mod) qObj.answers = mod.answers;
+        const optExplains = optionExplainsMap[`${exam}||${subject}||${num}`];
+        if (optExplains) qObj.optionExplains = optExplains;
+        allQuestions.push(qObj);
+      });
+      console.log(`Parsed ${exam} ${imgPrefix} ${subject}: ${qs.length} 題`);
     }
+  }
 
-    qs.forEach((item, idx) => {
-      const num = idx + 1;
-      if (item.options.length !== 4) throw new Error(`${exam} ${subject} Q${num} options=${item.options.length}`);
-      const ch = ans[idx];
-      const mod = modRules[num];
-      if (ch === "#" && !mod) throw new Error(`${exam} ${subject} Q${num} marked # without MOD rule`);
-      const qObj = {
-        exam,
-        subject,
-        num,
-        q: collapseImgStrips(TABLE_OVERRIDES[`${exam}||${subject}||${num}`] || item.q),
-        options: item.options.map(collapseImgStrips),
-        answer: mod ? mod.answers[0] : "ABCD".indexOf(ch),
-        explain: mod ? mod.explain : "",
-      };
-      if (mod) qObj.answers = mod.answers;
-      const optExplains = optionExplainsMap[`${exam}||${subject}||${num}`];
-      if (optExplains) qObj.optionExplains = optExplains;
-      allQuestions.push(qObj);
+  const missingJpx = jpxQueue.filter((j) => !fs.existsSync(j.outPath) || fs.statSync(j.outPath).size === 0);
+  console.log(`JPX images total: ${jpxQueue.length}, missing: ${missingJpx.length}`);
+  if (missingJpx.length) {
+    fs.writeFileSync(path.join(BASE, ".jpx-queue.json"), JSON.stringify(missingJpx.map((j) => ({
+      w: j.w, h: j.h, outPath: j.outPath, jp2Base64: j.jp2Buf.toString("base64")
+    }))));
+  }
+
+  const out = `// 由 build-bank.js 自動從考畢題答 PDF 解析產生，共 ${allQuestions.length} 題\nwindow.QUESTIONS = ${JSON.stringify(allQuestions, null, 2)};\n`;
+  fs.writeFileSync(path.join(BASE, "questions.js"), out, "utf8");
+  console.log(`Wrote ${allQuestions.length} questions to questions.js`);
+  return { totalQuestions: allQuestions.length, jpxTotal: jpxQueue.length, jpxMissing: missingJpx.length };
+}
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.includes("--sync")) {
+    const syncArgs = args.filter((a) => a !== "--sync");
+    const target = syncArgs.find((a, idx) => !a.startsWith("-") && syncArgs[idx - 1] !== "--year") || "";
+    const yIdx = syncArgs.indexOf("--year");
+    const year = yIdx !== -1 ? syncArgs[yIdx + 1] || "" : "";
+    const { runSync } = require("./sync-moex");
+    runSync({
+      target,
+      year,
+      opendata: syncArgs.includes("--opendata"),
+      force: syncArgs.includes("--force"),
+      rebuild: true,
+    }).catch((err) => {
+      console.error("同步失敗：", err.message);
+      process.exit(1);
     });
-    console.log(`Parsed ${exam} ${imgPrefix} ${subject}: ${qs.length} 題`);
+  } else {
+    buildBank();
   }
 }
 
-const missingJpx = jpxQueue.filter((j) => !fs.existsSync(j.outPath) || fs.statSync(j.outPath).size === 0);
-console.log(`JPX images total: ${jpxQueue.length}, missing: ${missingJpx.length}`);
-if (missingJpx.length) {
-  fs.writeFileSync(path.join(BASE, ".jpx-queue.json"), JSON.stringify(missingJpx.map((j) => ({
-    w: j.w, h: j.h, outPath: j.outPath, jp2Base64: j.jp2Buf.toString("base64")
-  }))));
-}
-
-const out = `// 由 build-bank.js 自動從考畢題答 PDF 解析產生，共 ${allQuestions.length} 題\nwindow.QUESTIONS = ${JSON.stringify(allQuestions, null, 2)};\n`;
-fs.writeFileSync(path.join(BASE, "questions.js"), out, "utf8");
-console.log(`Wrote ${allQuestions.length} questions to questions.js`);
+module.exports = { buildBank };

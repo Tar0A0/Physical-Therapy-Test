@@ -49,8 +49,21 @@
       <div class="bank">
         <span id="bankInfo"></span>
         <label class="file">匯入 CSV 題庫<input id="csvFile" type="file" accept=".csv" hidden /></label>
+        <button id="toggleMoexSync" type="button" class="secondary">🔗 串聯考選部 OpenData 題庫</button>
         <button id="resetBank" class="secondary">使用考畢題答題庫</button>
         <a href="template.csv" download>下載 CSV 範本</a>
+      </div>
+
+      <div id="moexSyncPanel" class="moex-sync-panel" hidden>
+        <div class="moex-sync-row">
+          <label class="moex-url-label">考選部考畢試題網址 / 考試代碼 / 年度
+            <input id="moexUrlInput" type="url" value="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" placeholder="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" />
+          </label>
+          <button id="moexSyncBtn" type="button">立即同步題庫</button>
+          <button id="moexCopyCmdBtn" type="button" class="secondary">複製同步指令</button>
+          <a href="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" target="_blank" rel="noopener">開啟考選部平臺 ↗</a>
+        </div>
+        <p id="moexSyncStatus" class="moex-status">支援自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建題庫。本機啟動 <code>node sync-moex.js --serve</code> 後可於此一鍵同步，或於終端機執行 <code>node sync-moex.js</code>。</p>
       </div>
 
       <div id="wrongSection" class="wrong-section">

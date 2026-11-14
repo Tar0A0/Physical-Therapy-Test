@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const BUILTIN = window.QUESTIONS;
+let BUILTIN = window.QUESTIONS;
 let all = BUILTIN;
 let picked = [];
 let lastMode = "normal";
@@ -613,6 +613,108 @@ $("resetSeen").onclick = () => {
 };
 
 localStorage.removeItem("examApiKey");
+
+function buildMoexSyncCommand(input) {
+  const val = String(input || "").trim() || "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090";
+  if (val === "--opendata" || val.toLowerCase() === "opendata") return "node sync-moex.js --opendata";
+  if (/^\d{2,4}$/.test(val)) return `node sync-moex.js --year ${val}`;
+  return `node sync-moex.js "${val}"`;
+}
+
+function reloadBuiltinScript() {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `questions.js?t=${Date.now()}`;
+    s.onload = () => {
+      BUILTIN = window.QUESTIONS;
+      localStorage.removeItem("examBank");
+      loadBank();
+      resolve();
+    };
+    s.onerror = () => reject(new Error("重新載入 questions.js 失敗"));
+    document.body.appendChild(s);
+  });
+}
+
+function setMoexStatus(msg, cls = "") {
+  const el = $("moexSyncStatus");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "moex-status" + (cls ? ` ${cls}` : "");
+}
+
+if ($("toggleMoexSync")) {
+  $("toggleMoexSync").onclick = () => {
+    $("moexSyncPanel").hidden = !$("moexSyncPanel").hidden;
+  };
+}
+
+if ($("moexCopyCmdBtn")) {
+  $("moexCopyCmdBtn").onclick = async () => {
+    const cmd = buildMoexSyncCommand($("moexUrlInput").value);
+    const ok = await copyTextToClipboard(cmd);
+    setMoexStatus(ok ? `已複製同步指令到剪貼簿：${cmd}` : `請於終端機執行：${cmd}`, ok ? "ok" : "");
+  };
+}
+
+if ($("moexSyncBtn")) {
+  $("moexSyncBtn").onclick = async () => {
+    const input = String($("moexUrlInput").value || "").trim() || "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090";
+    const cmd = buildMoexSyncCommand(input);
+    const btn = $("moexSyncBtn");
+    const isFile = typeof location !== "undefined" && location.protocol === "file:";
+
+    if (!isFile && typeof fetch === "function") {
+      btn.disabled = true;
+      setMoexStatus("正在連線考選部考畢試題平臺下載試題、答案與更正答案並更新題庫，請稍候…");
+      try {
+        const payload = input === "--opendata" || input.toLowerCase() === "opendata"
+          ? { opendata: true }
+          : (/^\d{2,4}$/.test(input) ? { year: input } : { url: input });
+        const resp = await fetch("/api/sync-moex", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const contentType = resp.headers?.get?.("content-type") || "";
+        if (resp.ok && contentType.includes("application/json")) {
+          const data = await resp.json();
+          if (!data.ok) throw new Error(data.error || "同步失敗");
+          await reloadBuiltinScript();
+          const summaryText = (data.results || [])
+            .map((r) => `${r.examCode}(${r.subjectCount}科・新下載${r.downloadedCount}檔)`)
+            .join("、");
+          setMoexStatus(
+            `同步成功！${summaryText}，目前內建題庫共 ${BUILTIN.length} 題。`,
+            "ok"
+          );
+          btn.disabled = false;
+          return;
+        }
+        if (resp.status === 400 && contentType.includes("application/json")) {
+          const data = await resp.json();
+          throw new Error(data.error || "輸入格式或同步參數錯誤");
+        }
+      } catch (err) {
+        if (err && /輸入格式|不支援|考選部|找不到|HTTP/.test(err.message)) {
+          setMoexStatus(`同步失敗：${err.message}`, "err");
+          btn.disabled = false;
+          return;
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    const copied = await copyTextToClipboard(cmd);
+    setMoexStatus(
+      (copied ? "目前為靜態網頁模式（瀏覽器跨網域限制無法直接抓取考選部 PDF），已自動複製指令：" : "請先於專案資料夾執行：") +
+        `${cmd}（若要在網頁內一鍵同步，請改用 node sync-moex.js --serve 開啟）`,
+      ""
+    );
+  };
+}
+
 loadBank();
 renderWrongBook();
 renderHistory();
