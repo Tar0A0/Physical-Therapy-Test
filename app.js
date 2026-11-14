@@ -612,6 +612,7 @@ $("resetSeen").onclick = () => {
   updateRepeatInfo();
 };
 
+localStorage.removeItem("examApiKey");
 loadBank();
 renderWrongBook();
 renderHistory();
