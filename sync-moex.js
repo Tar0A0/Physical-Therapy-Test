@@ -481,7 +481,7 @@ async function runSync({ target, year, opendata = false, all = false, force = fa
 
   let buildSummary = null;
   if (rebuild) {
-    console.log("正在執行 build-bank.js 重新解析題庫並更新 questions.js ...");
+    console.log("正在執行 build-bank.js 重新解析題庫並更新 data/manifest.json 與 data/chunks/*.json.gz ...");
     const { buildBank } = require("./build-bank");
     buildSummary = buildBank();
   }
@@ -494,6 +494,7 @@ const MIME_TYPES = {
   ".js": "application/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".gz": "application/gzip",
   ".csv": "text/csv; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -550,7 +551,11 @@ function startServer(port = 3000) {
       return;
     }
     const ext = path.extname(fullPath).toLowerCase();
-    res.writeHead(200, { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" });
+    const headers = { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" };
+    if (path.basename(fullPath) === "manifest.json") {
+      headers["Cache-Control"] = "no-cache";
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(fullPath).pipe(res);
   });
 

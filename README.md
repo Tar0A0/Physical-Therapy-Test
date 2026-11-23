@@ -36,12 +36,12 @@
 
 ### 2. 離線逐選項詳解（`optionExplains`）
 - 全題庫 2,880 題、每題 4 個選項（共 **11,520 條**）皆配備繁體中文選項解析。
-- 詳解資料集中維護於 `option-explains.json`（鍵值格式為 `${exam}||${subject}||${num}`），再由 `build-bank.js` 彙整寫入 `questions.js`。
+- 詳解資料集中維護於 `option-explains.json`（鍵值格式為 `${exam}||${subject}||${num}`），再由 `build-bank.js` 彙整寫入 `data/chunks/*.json.gz` 與 `data/manifest.json`。
 
 ### 3. 交卷後顯示與測驗介面行為
 - **作答期隱藏解析**：作答過程中不顯示任何對錯提示或選項詳解。
 - **交卷後統一揭露**：按下「交卷」後，於每個選項下方顯示 `.opt-note` 區塊與標籤（`✔ 正解選項` 或 `✘ 選項解析`）及對應詳解；題目下方顯示整體對錯、更正備註與出處（`考試別・科目・第 N 題`），並提供「✨ 問問 Gemini（自動帶入詢問）」按鈕透過 `https://www.google.com/search?udm=50&q=...` 直接於 Google AI Mode（Gemini）自動帶入題目、選項、個人作答與正確答案發問（免手動貼上、不串接任何 API Key），另提供「Gemini App（複製貼上）」按鈕並同時自動複製到剪貼簿，同時將成績記錄至瀏覽器 `localStorage`。
-- **使用者舊資料提醒**：若使用者曾匯入自訂 CSV 題庫於 `localStorage`，點選「恢復預設題庫」即可重新載入內建 `questions.js`。
+- **使用者舊資料提醒**：若使用者曾匯入自訂 CSV 題庫於 `localStorage`，點選「使用考畢題答題庫」即可重新載入內建分割題庫（`data/manifest.json` 與 `data/chunks/*.json.gz`）。
 
 ### 4. 圖片與表格固定處理機制
 - **圖片標籤、解碼與合併**：
@@ -65,9 +65,10 @@
 | `app.js` | 題庫載入、CSV 匯入、題組抽題、`fmt()` 表格與圖片渲染、交卷批改與逐選項詳解顯示 |
 | `style.css` | 題目卡片、表格（`.q-table`）、圖片（`.q-img`）、對錯選項與詳解區塊（`.opt-note`）樣式 |
 | `option-explains.json` | 全題庫 2,880 題 × 4 選項（11,520 條）之繁體中文離線詳解來源檔 |
-| `build-bank.js` | 解析考選部試題與更正答案 PDF、合併 `TABLE_OVERRIDES` 與 `option-explains.json`、生成 `questions.js` |
+| `build-bank.js` | 解析考選部試題與更正答案 PDF、合併 `TABLE_OVERRIDES` 與 `option-explains.json`、生成 `data/manifest.json` 與各年度／科目 gzip 分塊 `data/chunks/*.json.gz` |
 | `sync-moex.js` | 自動串聯考選部考畢試題查詢平臺（`wFrmExamQandASearch.aspx`）與 OpenData CSV，下載物理治療師試題／答案／更正答案並呼叫 `build-bank.js` 更新題庫 |
-| `questions.js` | 網頁實際載入的完整題庫資料（`window.QUESTIONS`） |
+| `data/manifest.json` | 題庫索引檔（年度、科目、題號與分塊檔案清單），供首頁快速初始化篩選與防重複統計 |
+| `data/chunks/*.json.gz` | 按「年度／科目」拆分的 gzip 壓縮題庫分塊，依使用者選擇範圍與題數按需下載並於瀏覽器端解壓 |
 | `img/` | 題目與選項附圖（已完成水平條帶拼接與深灰黑框裁切） |
 
 ### 重建題庫標準指令
@@ -75,10 +76,10 @@
 ```powershell
 node build-bank.js
 ```
-執行後會自動保留 `img/` 中已處理完成的圖片，並重新輸出完整的 `questions.js`。
+執行後會自動保留 `img/` 中已處理完成的圖片，並重新輸出 `data/manifest.json` 與 `data/chunks/*.json.gz`。
 
 ### 自動串聯考選部 OpenData / 考畢試題平臺指令
-直接指定考選部網址、考試代碼、年度或 OpenData CSV 自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建 `questions.js`：
+直接指定考選部網址、考試代碼、年度或 OpenData CSV 自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建分割題庫：
 ```powershell
 node sync-moex.js "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090"
 # 亦支援年度自動探索、OpenData CSV 或整合 build-bank.js --sync：

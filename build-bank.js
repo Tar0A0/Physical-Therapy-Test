@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
@@ -5,6 +6,8 @@ const zlib = require("zlib");
 const BASE = __dirname;
 const BANK_ROOT = path.join(BASE, "題庫");
 const IMG_DIR = path.join(BASE, "img");
+const DATA_DIR = path.join(BASE, "data");
+const CHUNKS_DIR = path.join(DATA_DIR, "chunks");
 fs.mkdirSync(IMG_DIR, { recursive: true });
 
 // Minimal PNG encoder for raw RGB24 buffers extracted from FlateDecode PDF images
@@ -780,6 +783,12 @@ function collapseImgStrips(str) {
 const rowRe = /<UL class='link_3'><LI><table[^>]*><tr>\s*<td><div>([^<]+)<\/div><\/td>([\s\S]*?)<\/tr><\/table>/g;
 const EXPLAINS_PATH = path.join(BASE, "option-explains.json");
 
+function makeExamSlug(exam, idx) {
+  const m = String(exam || "").match(/^(\d+)年第([一二三四])次$/);
+  if (m) return `${m[1]}-${{ 一: 1, 二: 2, 三: 3, 四: 4 }[m[2]]}`;
+  return `e${idx}`;
+}
+
 function buildBank() {
   const optionExplainsMap = fs.existsSync(EXPLAINS_PATH)
     ? JSON.parse(fs.readFileSync(EXPLAINS_PATH, "utf8"))
@@ -842,10 +851,82 @@ function buildBank() {
     }))));
   }
 
-  const out = `// 由 build-bank.js 自動從考畢題答 PDF 解析產生，共 ${allQuestions.length} 題\nwindow.QUESTIONS = ${JSON.stringify(allQuestions, null, 2)};\n`;
-  fs.writeFileSync(path.join(BASE, "questions.js"), out, "utf8");
-  console.log(`Wrote ${allQuestions.length} questions to questions.js`);
-  return { totalQuestions: allQuestions.length, jpxTotal: jpxQueue.length, jpxMissing: missingJpx.length };
+  const exams = [];
+  const examIndex = new Map();
+  const subjects = [];
+  const subjectIndex = new Map();
+  const grouped = new Map();
+
+  for (const qObj of allQuestions) {
+    if (!examIndex.has(qObj.exam)) {
+      examIndex.set(qObj.exam, exams.length);
+      exams.push(qObj.exam);
+    }
+    if (!subjectIndex.has(qObj.subject)) {
+      subjectIndex.set(qObj.subject, subjects.length);
+      subjects.push(qObj.subject);
+    }
+    const pairKey = `${qObj.exam}||${qObj.subject}`;
+    if (!grouped.has(pairKey)) grouped.set(pairKey, []);
+    grouped.get(pairKey).push(qObj);
+  }
+
+  fs.mkdirSync(CHUNKS_DIR, { recursive: true });
+  const usedFiles = new Set();
+  const buildHash = crypto.createHash("sha256");
+  const chunks = [];
+  let totalGzipBytes = 0;
+
+  for (const list of grouped.values()) {
+    const { exam, subject } = list[0];
+    const eIdx = examIndex.get(exam);
+    const sIdx = subjectIndex.get(subject);
+    let file = `${makeExamSlug(exam, eIdx)}_s${sIdx}.json.gz`;
+    if (usedFiles.has(file)) {
+      file = `e${eIdx}_s${sIdx}.json.gz`;
+    }
+    usedFiles.add(file);
+
+    const rawBuf = Buffer.from(JSON.stringify(list), "utf8");
+    const gzBuf = zlib.gzipSync(rawBuf, { level: 9 });
+    fs.writeFileSync(path.join(CHUNKS_DIR, file), gzBuf);
+    totalGzipBytes += gzBuf.length;
+
+    buildHash.update(file);
+    buildHash.update(gzBuf);
+
+    const isContiguous = list.every((q, i) => q.num === i + 1);
+    const entry = { e: eIdx, s: sIdx, file, count: list.length };
+    if (!isContiguous) entry.nums = list.map((q) => q.num);
+    chunks.push(entry);
+  }
+
+  for (const existingFile of fs.readdirSync(CHUNKS_DIR)) {
+    if (!usedFiles.has(existingFile)) {
+      fs.unlinkSync(path.join(CHUNKS_DIR, existingFile));
+    }
+  }
+
+  const manifest = {
+    version: 1,
+    buildId: buildHash.digest("hex").slice(0, 8),
+    total: allQuestions.length,
+    exams,
+    subjects,
+    chunks,
+  };
+  const manifestStr = JSON.stringify(manifest);
+  fs.writeFileSync(path.join(DATA_DIR, "manifest.json"), manifestStr, "utf8");
+  console.log(
+    `Wrote ${allQuestions.length} questions across ${chunks.length} gzipped chunks (${(totalGzipBytes / 1024).toFixed(1)} KB) and data/manifest.json (${manifestStr.length} B)`
+  );
+  return {
+    totalQuestions: allQuestions.length,
+    chunkCount: chunks.length,
+    totalGzipBytes,
+    jpxTotal: jpxQueue.length,
+    jpxMissing: missingJpx.length,
+  };
 }
 
 if (require.main === module) {
