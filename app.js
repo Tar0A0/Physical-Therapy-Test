@@ -645,7 +645,7 @@ async function startQuiz(mode = "normal") {
           <div class="q-title">${i + 1}. ${fmt(q.q)}</div>
           ${q.options.map((opt, j) => `
             <label class="opt-item">
-              <div class="opt-line"><input type="radio" name="q${i}" value="${j}" required /> <span class="opt-text">(${"ABCDEFGH"[j]}) ${fmt(opt)}</span></div>
+              <div class="opt-line"><input type="radio" name="q${i}" value="${j}" /> <span class="opt-text">(${"ABCDEFGH"[j]}) ${fmt(opt)}</span></div>
               <div class="opt-note" hidden></div>
             </label>
           `).join("")}
@@ -751,13 +751,28 @@ async function askGeminiWithQuestion(q, chosen, btnEl, target = "aiMode") {
 
 function submit(e) {
   e.preventDefault();
+  const unansweredNums = [];
+  picked.forEach((_, i) => {
+    if (!$(`q${i}`).querySelector("input:checked")) unansweredNums.push(i + 1);
+  });
+  if (unansweredNums.length) {
+    const previewList = unansweredNums.slice(0, 10).map((n) => `第 ${n} 題`).join("、");
+    const suffix = unansweredNums.length > 10 ? " 等" : "";
+    const preview = `（${previewList}${suffix}）`;
+    if (!confirm(`還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`)) {
+      $(`q${unansweredNums[0] - 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+  }
+
   let correct = 0;
   const autoRemove = $("autoRemoveWrong").checked;
   picked.forEach((q, i) => {
     const box = $(`q${i}`);
-    const chosen = +box.querySelector("input:checked").value;
+    const checkedEl = box.querySelector("input:checked");
+    const chosen = checkedEl ? +checkedEl.value : null;
     q.chosen = chosen;
-    const ok = q.answers ? q.answers.includes(chosen) : chosen === q.answer;
+    const ok = chosen !== null && (q.answers ? q.answers.includes(chosen) : chosen === q.answer);
     if (ok) correct++;
     const rawQ = q.rawQ || q;
     if (!ok) addWrongQuestion(rawQ);
@@ -771,7 +786,7 @@ function submit(e) {
 
     box.querySelectorAll("label.opt-item").forEach((labelEl, j) => {
       const isAns = ansIndices.includes(j);
-      const isChosenWrong = j === chosen && !isAns;
+      const isChosenWrong = chosen !== null && j === chosen && !isAns;
       if (isAns) labelEl.classList.add("opt-correct");
       else if (isChosenWrong) labelEl.classList.add("opt-wrong");
       const noteEl = labelEl.querySelector(".opt-note");
@@ -782,7 +797,10 @@ function submit(e) {
       }
     });
 
-    ex.innerHTML = `${ok ? "✔ 答對" : "✘ 答錯，正確答案：" + ansLabel}${q.explain ? "｜" + esc(q.explain) : ""}` +
+    const statusText = ok
+      ? "✔ 答對"
+      : `${chosen === null ? "✘ 未作答" : "✘ 答錯"}，正確答案：${ansLabel}`;
+    ex.innerHTML = `${statusText}${q.explain ? "｜" + esc(q.explain) : ""}` +
       (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
       `<div class="gemini-bar">` +
       `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">✨ 問問 Gemini（自動帶入詢問）</button>` +
@@ -798,7 +816,8 @@ function submit(e) {
   updateRepeatInfo();
   $("quiz").querySelector(".quiz-actions").remove();
   const pct = Math.round((correct / picked.length) * 100);
-  $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分）`;
+  const unansweredNote = unansweredNums.length ? `，未作答 ${unansweredNums.length} 題` : "";
+  $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分${unansweredNote}）`;
   $("result").hidden = false;
   $("result").scrollIntoView({ behavior: "smooth" });
   const exam = $("exam").value;
