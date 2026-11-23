@@ -227,34 +227,42 @@ button.secondary:hover:not(:disabled) {
   align-items: center;
 }
 
-.gemini-btn {
+button.gemini-btn {
   padding: 0.34rem 0.78rem;
+  font-family: var(--font-sans);
   font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
   border-radius: var(--radius);
   background: transparent;
   color: var(--color-primary);
   border: 1px solid var(--color-primary);
 }
 
-.gemini-btn:hover:not(:disabled) {
+button.gemini-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--color-primary-hover);
   border-color: var(--color-primary-hover);
 }
 
-.gemini-btn.secondary {
+button.gemini-btn.secondary {
+  padding: 0.34rem 0.78rem;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
   border-color: var(--border-strong);
   color: var(--text-muted);
 }
 
-.gemini-btn.secondary:hover:not(:disabled) {
+button.gemini-btn.secondary:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-ink);
   border-color: var(--text-muted);
 }
 
-.gemini-btn.copied,
-.gemini-btn.copied:hover:not(:disabled) {
+button.gemini-btn.copied,
+button.gemini-btn.copied:hover:not(:disabled) {
   background: var(--color-primary);
   color: #FFFDF8;
   border-color: var(--color-primary);
@@ -418,9 +426,12 @@ button.secondary:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 
-.wrong-meta button.secondary {
+.wrong-meta button {
   padding: 0.28rem 0.7rem;
+  font-family: var(--font-sans);
   font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .wrong-opt {

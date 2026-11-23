@@ -858,7 +858,7 @@ function submit(e) {
     ex.innerHTML = `${statusText}${q.explain ? "｜" + esc(q.explain) : ""}` +
       (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
       `<div class="gemini-bar">` +
-      `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">✨ 問問 Gemini（自動帶入詢問）</button>` +
+      `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">問問 Gemini（自動帶入詢問）</button>` +
       `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
       `</div>`;
     ex.hidden = false;
@@ -968,7 +968,7 @@ function renderWrongBook() {
         <div class="wrong-meta">
           <span>${esc(source)}｜錯 ${q.wrongCount || 1} 次${q.lastTime ? `｜${esc(q.lastTime)}` : ""}</span>
           <div class="wrong-meta-actions">
-            <button type="button" class="gemini-btn wrong-gemini" data-key="${esc(key)}" data-target="aiMode">✨ 問問 Gemini（自動帶入）</button>
+            <button type="button" class="gemini-btn wrong-gemini" data-key="${esc(key)}" data-target="aiMode">問問 Gemini（自動帶入）</button>
             <button type="button" class="gemini-btn secondary wrong-gemini" data-key="${esc(key)}" data-target="geminiApp">Gemini App（複製貼上）</button>
             <button type="button" class="secondary wrong-remove" data-key="${esc(key)}">移出</button>
           </div>
