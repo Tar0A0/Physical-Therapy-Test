@@ -44,6 +44,84 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.notice-bar {
+  position: fixed;
+  top: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(calc(100% - 1.5rem), 680px);
+  z-index: 100;
+  background: var(--bg-paper);
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.95rem;
+  box-shadow: 0 6px 20px rgba(43, 43, 43, 0.14);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.notice-bar.is-warn {
+  border-left-color: #B07A18;
+}
+
+.notice-bar.is-err,
+.notice-bar.is-danger {
+  border-left-color: var(--color-danger);
+  background: var(--color-danger-tint);
+}
+
+.notice-msg {
+  flex: 1 1 220px;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text-ink);
+  white-space: pre-line;
+}
+
+.notice-actions {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+button.notice-btn {
+  padding: 0.3rem 0.75rem;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+button.notice-btn.danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #FFFDF8;
+}
+
+button.notice-btn.danger:hover:not(:disabled) {
+  background: #963522;
+  border-color: #963522;
+}
+
+button.notice-close {
+  padding: 0.15rem 0.45rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+button.notice-close:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-ink);
+}
+
 main {
   max-width: var(--max-width);
   margin: 0 auto;
@@ -1054,8 +1132,19 @@ button.quiz-nav-btn {
   }
 
   .quiz-nav-btn,
-  .q-chip {
+  .q-chip,
+  .notice-close {
     width: auto;
+  }
+
+  .notice-bar {
+    top: 0.5rem;
+    padding: 0.65rem 0.75rem;
+  }
+
+  .notice-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   #recentHistoryWrap {

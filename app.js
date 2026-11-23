@@ -7,7 +7,74 @@ let customBank = null;
 let picked = [];
 let lastMode = "normal";
 let isLoadingQuiz = false;
+let isSubmitting = false;
 let lastNavIdx = -1;
+let noticeTimer = null;
+let pendingConfirmResolve = null;
+let noticeEscHandler = null;
+
+function hideNotice(resolveValue = false) {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeEscHandler && typeof document.removeEventListener === "function") {
+    document.removeEventListener("keydown", noticeEscHandler);
+  }
+  noticeEscHandler = null;
+  const bar = $("noticeBar");
+  if (bar) {
+    bar.hidden = true;
+    bar.innerHTML = "";
+  }
+  if (pendingConfirmResolve) {
+    const resolve = pendingConfirmResolve;
+    pendingConfirmResolve = null;
+    resolve(resolveValue);
+  }
+}
+
+function showNotice(message, type = "info", durationMs = type === "err" ? 6000 : 4500) {
+  hideNotice(false);
+  const bar = $("noticeBar");
+  if (!bar) return;
+  bar.className = "notice-bar" + (type && type !== "info" && type !== "ok" ? ` is-${type}` : "");
+  bar.setAttribute("role", "status");
+  bar.innerHTML =
+    `<div class="notice-msg">${esc(message)}</div>` +
+    `<button type="button" id="noticeCloseBtn" class="notice-close" aria-label="關閉提示">✕</button>`;
+  bar.hidden = false;
+  if ($("noticeCloseBtn")) $("noticeCloseBtn").onclick = () => hideNotice(false);
+  if (durationMs > 0) {
+    noticeTimer = setTimeout(() => hideNotice(false), durationMs);
+  }
+}
+
+function askConfirm(message, { confirmText = "確定", cancelText = "取消", danger = false } = {}) {
+  hideNotice(false);
+  const bar = $("noticeBar");
+  if (!bar) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+    bar.className = "notice-bar" + (danger ? " is-danger" : " is-warn");
+    bar.setAttribute("role", "alertdialog");
+    bar.innerHTML =
+      `<div class="notice-msg">${esc(message)}</div>` +
+      `<div class="notice-actions">` +
+      `<button type="button" id="noticeCancel" class="secondary notice-btn">${esc(cancelText)}</button>` +
+      `<button type="button" id="noticeConfirm" class="notice-btn${danger ? " danger" : ""}">${esc(confirmText)}</button>` +
+      `</div>`;
+    bar.hidden = false;
+    if ($("noticeConfirm")) $("noticeConfirm").onclick = () => hideNotice(true);
+    if ($("noticeCancel")) $("noticeCancel").onclick = () => hideNotice(false);
+    if (typeof document.addEventListener === "function") {
+      noticeEscHandler = (ev) => {
+        if (ev.key === "Escape") hideNotice(false);
+      };
+      document.addEventListener("keydown", noticeEscHandler);
+    }
+  });
+}
 
 function scrollToQuestion(idx) {
   const box = $(`q${idx}`);
@@ -258,10 +325,10 @@ $("csvFile").onchange = async (e) => {
   if (!file) return;
   const { out, errors } = csvToQuestions(await file.text());
   e.target.value = "";
-  if (!out.length) return alert("沒有讀到任何題目，請確認 CSV 格式（存成「CSV UTF-8」）。");
+  if (!out.length) return showNotice("沒有讀到任何題目，請確認 CSV 格式（存成「CSV UTF-8」）。", "err");
   localStorage.setItem("examBank", JSON.stringify(out));
   loadBank();
-  alert(`匯入 ${out.length} 題` + (errors.length ? `\n略過格式錯誤的列：${errors.join(", ")}` : ""));
+  showNotice(`已匯入 ${out.length} 題` + (errors.length ? `\n略過格式錯誤的列：${errors.join(", ")}` : ""), "ok");
 };
 
 $("resetBank").onclick = () => {
@@ -464,9 +531,10 @@ async function startQuiz(mode = "normal") {
   };
 
   try {
+    hideNotice(false);
     if (!customBank && !manifest) {
       await loadBank();
-      if (!manifest) return alert("題庫尚未載入，請確認網路或使用 node sync-moex.js --serve 開啟。");
+      if (!manifest) return showNotice("題庫尚未載入，請確認網路或使用 node sync-moex.js --serve 開啟。", "err");
     }
 
     const exam = $("exam").value || "全部";
@@ -479,7 +547,7 @@ async function startQuiz(mode = "normal") {
 
     if (mode === "wrong") {
       let wrongAll = loadWrongBook();
-      if (!wrongAll.length) return alert("目前錯題簿沒有題目");
+      if (!wrongAll.length) return showNotice("目前錯題簿沒有題目", "warn");
       const filtered = wrongAll.filter(
         (q) => (exam === "全部" || q.exam === exam) && (subject === "全部" || q.subject === subject)
       );
@@ -515,7 +583,11 @@ async function startQuiz(mode = "normal") {
       const n = Math.min(Math.max(1, +$("count").value || 1), pool.length);
       let unseenWrong = winMs === null ? pool : pool.filter((q) => !isQuestionSeen(q, seenMap, now, winMs));
       if (!unseenWrong.length) {
-        if (!confirm("錯題簿在此範圍內的題目於目前防重複條件下已全部抽過！是否重置此範圍錯題的已抽紀錄並繼續測驗？")) return;
+        const resetOk = await askConfirm(
+          "錯題簿在此範圍內的題目於目前防重複條件下已全部抽過！是否重置此範圍錯題的已抽紀錄並繼續測驗？",
+          { confirmText: "重置並測驗" }
+        );
+        if (!resetOk) return;
         for (const q of pool) delete seenMap[getQKey(q)];
         saveSeenMap(seenMap);
         updateRepeatInfo();
@@ -524,12 +596,16 @@ async function startQuiz(mode = "normal") {
       rawPicked = shuffle(unseenWrong).slice(0, n);
     } else if (customBank) {
       const pool = getFilteredCustomPool();
-      if (!pool.length) return alert("此篩選條件下沒有題目");
+      if (!pool.length) return showNotice("此篩選條件下沒有題目", "warn");
       const n = Math.min(Math.max(1, +$("count").value || 1), pool.length);
       const groups = buildQuestionGroups(pool);
       let unseenGroups = winMs === null ? groups : groups.filter((g) => g.some((q) => !isQuestionSeen(q, seenMap, now, winMs)));
       if (!unseenGroups.length) {
-        if (!confirm("此考卷／範圍內的題目在目前防重複條件下已全部抽完！是否重置此範圍的已抽紀錄並重新抽題？")) return;
+        const resetOk = await askConfirm(
+          "此考卷／範圍內的題目在目前防重複條件下已全部抽完！是否重置此範圍的已抽紀錄並重新抽題？",
+          { confirmText: "重置並抽題" }
+        );
+        if (!resetOk) return;
         for (const q of pool) delete seenMap[getQKey(q)];
         saveSeenMap(seenMap);
         updateRepeatInfo();
@@ -543,7 +619,7 @@ async function startQuiz(mode = "normal") {
       if (!rawPicked.length && shuffledGroups.length) rawPicked.push(...shuffledGroups[0]);
     } else {
       const matchingChunks = getMatchingChunks(exam, subject);
-      if (!matchingChunks.length) return alert("此篩選條件下沒有題目");
+      if (!matchingChunks.length) return showNotice("此篩選條件下沒有題目", "warn");
       const totalInRange = matchingChunks.reduce((s, c) => s + c.count, 0);
       const n = Math.min(Math.max(1, +$("count").value || 1), totalInRange);
 
@@ -556,7 +632,11 @@ async function startQuiz(mode = "normal") {
       });
       let totalUnseen = chunkUnseen.reduce((s, x) => s + x.unseen, 0);
       if (totalUnseen === 0) {
-        if (!confirm("此考卷／範圍內的題目在目前防重複條件下已全部抽完！是否重置此範圍的已抽紀錄並重新抽題？")) return;
+        const resetOk = await askConfirm(
+          "此考卷／範圍內的題目在目前防重複條件下已全部抽完！是否重置此範圍的已抽紀錄並重新抽題？",
+          { confirmText: "重置並抽題" }
+        );
+        if (!resetOk) return;
         for (const c of matchingChunks) {
           forEachChunkNum(c, (num) => { delete seenMap[getChunkQuestionKey(c, num)]; });
         }
@@ -702,6 +782,7 @@ async function startQuiz(mode = "normal") {
       `<div class="quiz-actions"><button type="submit">交卷</button><button type="button" id="cancelQuiz" class="secondary">返回重選</button></div>`;
     updateQuizProgress();
     $("cancelQuiz").onclick = () => {
+      hideNotice(false);
       localStorage.setItem("seenQuestions", prevSeenJson);
       updateRepeatInfo();
       $("quiz").hidden = true;
@@ -714,7 +795,7 @@ async function startQuiz(mode = "normal") {
     $("quiz").hidden = false;
     window.scrollTo(0, 0);
   } catch (err) {
-    alert(`載入題目失敗：${err?.message || err}`);
+    showNotice(`載入題目失敗：${err?.message || err}`, "err");
   } finally {
     isLoadingQuiz = false;
     setLoadingState(false);
@@ -798,100 +879,114 @@ async function askGeminiWithQuestion(q, chosen, btnEl, target = "aiMode") {
   window.open(url, "_blank", "noopener");
 }
 
-function submit(e) {
+async function submit(e) {
   e.preventDefault();
-  const unansweredNums = [];
-  picked.forEach((_, i) => {
-    if (!$(`q${i}`).querySelector("input:checked")) unansweredNums.push(i + 1);
-  });
-  if (unansweredNums.length) {
-    const previewList = unansweredNums.slice(0, 10).map((n) => `第 ${n} 題`).join("、");
-    const suffix = unansweredNums.length > 10 ? " 等" : "";
-    const preview = `（${previewList}${suffix}）`;
-    if (!confirm(`還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`)) {
-      scrollToQuestion(unansweredNums[0] - 1);
-      return;
+  if (isSubmitting) return;
+  isSubmitting = true;
+  try {
+    const unansweredNums = [];
+    picked.forEach((_, i) => {
+      if (!$(`q${i}`).querySelector("input:checked")) unansweredNums.push(i + 1);
+    });
+    if (unansweredNums.length) {
+      const previewList = unansweredNums.slice(0, 10).map((n) => `第 ${n} 題`).join("、");
+      const suffix = unansweredNums.length > 10 ? " 等" : "";
+      const preview = `（${previewList}${suffix}）`;
+      const proceed = await askConfirm(
+        `還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`,
+        {
+          confirmText: "仍要交卷",
+          cancelText: `前往第 ${unansweredNums[0]} 題`,
+          danger: true,
+        }
+      );
+      if (!proceed) {
+        scrollToQuestion(unansweredNums[0] - 1);
+        return;
+      }
     }
-  }
 
-  let correct = 0;
-  const perSubject = new Map();
-  const autoRemove = $("autoRemoveWrong").checked;
-  picked.forEach((q, i) => {
-    const box = $(`q${i}`);
-    const checkedEl = box.querySelector("input:checked");
-    const chosen = checkedEl ? +checkedEl.value : null;
-    q.chosen = chosen;
-    const ok = chosen !== null && (q.answers ? q.answers.includes(chosen) : chosen === q.answer);
-    if (ok) correct++;
-    const subName = q.subject || "未分類";
-    const subStat = perSubject.get(subName) || { c: 0, t: 0 };
-    if (ok) subStat.c++;
-    subStat.t++;
-    perSubject.set(subName, subStat);
-    const rawQ = q.rawQ || q;
-    if (!ok) addWrongQuestion(rawQ);
-    else if (autoRemove) removeWrongQuestion(getQKey(rawQ));
-    box.className = ok ? "right" : "wrong";
-    box.querySelectorAll("input").forEach((el) => (el.disabled = true));
-    const ex = box.querySelector(".explain");
-    const ansIndices = q.answers || [q.answer];
-    const ansLabel = ansIndices.map((a) => `(${"ABCDEFGH"[a]}) ${fmt(q.options[a])}`).join(" 或 ");
-    const source = [q.exam, q.subject, q.num ? `第 ${q.num} 題` : ""].filter(Boolean).join("・");
+    let correct = 0;
+    const perSubject = new Map();
+    const autoRemove = $("autoRemoveWrong").checked;
+    picked.forEach((q, i) => {
+      const box = $(`q${i}`);
+      const checkedEl = box.querySelector("input:checked");
+      const chosen = checkedEl ? +checkedEl.value : null;
+      q.chosen = chosen;
+      const ok = chosen !== null && (q.answers ? q.answers.includes(chosen) : chosen === q.answer);
+      if (ok) correct++;
+      const subName = q.subject || "未分類";
+      const subStat = perSubject.get(subName) || { c: 0, t: 0 };
+      if (ok) subStat.c++;
+      subStat.t++;
+      perSubject.set(subName, subStat);
+      const rawQ = q.rawQ || q;
+      if (!ok) addWrongQuestion(rawQ);
+      else if (autoRemove) removeWrongQuestion(getQKey(rawQ));
+      box.className = ok ? "right" : "wrong";
+      box.querySelectorAll("input").forEach((el) => (el.disabled = true));
+      const ex = box.querySelector(".explain");
+      const ansIndices = q.answers || [q.answer];
+      const ansLabel = ansIndices.map((a) => `(${"ABCDEFGH"[a]}) ${fmt(q.options[a])}`).join(" 或 ");
+      const source = [q.exam, q.subject, q.num ? `第 ${q.num} 題` : ""].filter(Boolean).join("・");
 
-    box.querySelectorAll("label.opt-item").forEach((labelEl, j) => {
-      const isAns = ansIndices.includes(j);
-      const isChosenWrong = chosen !== null && j === chosen && !isAns;
-      if (isAns) labelEl.classList.add("opt-correct");
-      else if (isChosenWrong) labelEl.classList.add("opt-wrong");
-      const noteEl = labelEl.querySelector(".opt-note");
-      const noteText = q.optionExplains?.[j];
-      if (noteEl && noteText) {
-        noteEl.innerHTML = `<span class="opt-tag ${isAns ? "tag-right" : "tag-wrong"}">${isAns ? "✔ 正解選項" : "✘ 選項解析"}</span> ${fmt(noteText)}`;
-        noteEl.hidden = false;
+      box.querySelectorAll("label.opt-item").forEach((labelEl, j) => {
+        const isAns = ansIndices.includes(j);
+        const isChosenWrong = chosen !== null && j === chosen && !isAns;
+        if (isAns) labelEl.classList.add("opt-correct");
+        else if (isChosenWrong) labelEl.classList.add("opt-wrong");
+        const noteEl = labelEl.querySelector(".opt-note");
+        const noteText = q.optionExplains?.[j];
+        if (noteEl && noteText) {
+          noteEl.innerHTML = `<span class="opt-tag ${isAns ? "tag-right" : "tag-wrong"}">${isAns ? "✔ 正解選項" : "✘ 選項解析"}</span> ${fmt(noteText)}`;
+          noteEl.hidden = false;
+        }
+      });
+
+      const statusText = ok
+        ? "✔ 答對"
+        : `${chosen === null ? "✘ 未作答" : "✘ 答錯"}，正確答案：${ansLabel}`;
+      ex.innerHTML = `${statusText}${q.explain ? "｜" + esc(q.explain) : ""}` +
+        (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
+        `<div class="gemini-bar">` +
+        `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">問問 Gemini（自動帶入詢問）</button>` +
+        `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
+        `</div>`;
+      ex.hidden = false;
+
+      const chip = $("quizNumGrid")?.querySelector(`.q-chip[data-qidx="${i}"]`);
+      if (chip) {
+        chip.classList.remove("answered");
+        chip.classList.add(ok ? "right" : "wrong");
+        chip.title = `第 ${i + 1} 題：${ok ? "答對" : (chosen === null ? "未作答" : "答錯")}`;
       }
     });
-
-    const statusText = ok
-      ? "✔ 答對"
-      : `${chosen === null ? "✘ 未作答" : "✘ 答錯"}，正確答案：${ansLabel}`;
-    ex.innerHTML = `${statusText}${q.explain ? "｜" + esc(q.explain) : ""}` +
-      (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
-      `<div class="gemini-bar">` +
-      `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">問問 Gemini（自動帶入詢問）</button>` +
-      `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
-      `</div>`;
-    ex.hidden = false;
-
-    const chip = $("quizNumGrid")?.querySelector(`.q-chip[data-qidx="${i}"]`);
-    if (chip) {
-      chip.classList.remove("answered");
-      chip.classList.add(ok ? "right" : "wrong");
-      chip.title = `第 ${i + 1} 題：${ok ? "答對" : (chosen === null ? "未作答" : "答錯")}`;
+    renderWrongBook();
+    const seenMap = loadSeenMap();
+    const submitTs = Date.now();
+    for (const q of picked) seenMap[getQKey(q.rawQ || q)] = submitTs;
+    saveSeenMap(seenMap);
+    updateRepeatInfo();
+    $("quiz").querySelector(".quiz-actions").remove();
+    const pct = Math.round((correct / picked.length) * 100);
+    if ($("jumpUnanswered")) $("jumpUnanswered").hidden = true;
+    if ($("quizProgress")) {
+      $("quizProgress").innerHTML = `批改結果：<strong>${correct} / ${picked.length}</strong>（答對 ${correct}、答錯 ${picked.length - correct}）`;
     }
-  });
-  renderWrongBook();
-  const seenMap = loadSeenMap();
-  const submitTs = Date.now();
-  for (const q of picked) seenMap[getQKey(q.rawQ || q)] = submitTs;
-  saveSeenMap(seenMap);
-  updateRepeatInfo();
-  $("quiz").querySelector(".quiz-actions").remove();
-  const pct = Math.round((correct / picked.length) * 100);
-  if ($("jumpUnanswered")) $("jumpUnanswered").hidden = true;
-  if ($("quizProgress")) {
-    $("quizProgress").innerHTML = `批改結果：<strong>${correct} / ${picked.length}</strong>（答對 ${correct}、答錯 ${picked.length - correct}）`;
+    if ($("quizProgressFill")) $("quizProgressFill").style.width = `${pct}%`;
+    const unansweredNote = unansweredNums.length ? `，未作答 ${unansweredNums.length} 題` : "";
+    $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分${unansweredNote}）`;
+    $("result").hidden = false;
+    $("result").scrollIntoView({ behavior: "smooth" });
+    const exam = $("exam").value;
+    const baseLabel = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
+    const label = lastMode === "wrong" ? `[錯題] ${baseLabel}` : baseLabel;
+    recordSubjectStats(perSubject, submitTs);
+    saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
+  } finally {
+    isSubmitting = false;
   }
-  if ($("quizProgressFill")) $("quizProgressFill").style.width = `${pct}%`;
-  const unansweredNote = unansweredNums.length ? `，未作答 ${unansweredNums.length} 題` : "";
-  $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分${unansweredNote}）`;
-  $("result").hidden = false;
-  $("result").scrollIntoView({ behavior: "smooth" });
-  const exam = $("exam").value;
-  const baseLabel = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
-  const label = lastMode === "wrong" ? `[錯題] ${baseLabel}` : baseLabel;
-  recordSubjectStats(perSubject, submitTs);
-  saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
 }
 
 // ---------- 錯題簿 ----------
@@ -1153,13 +1248,14 @@ if ($("toggleRecentHistory")) {
   };
 }
 
-$("clearHistory").onclick = () => {
-  if (!confirm("確定要清除所有各科統計與最近成績紀錄嗎？")) return;
+$("clearHistory").onclick = async () => {
+  if (!(await askConfirm("確定要清除所有各科統計與最近成績紀錄嗎？", { confirmText: "確認清除", danger: true }))) return;
   localStorage.removeItem("subjectStats");
   localStorage.removeItem("examHistory");
   if ($("recentHistoryWrap")) $("recentHistoryWrap").hidden = true;
   if ($("toggleRecentHistory")) $("toggleRecentHistory").textContent = "檢視最近紀錄";
   renderHistory();
+  showNotice("已清除所有統計與成績紀錄", "info");
 };
 
 $("autoRemoveWrong").checked = localStorage.getItem("autoRemoveWrong") === "1";
@@ -1173,9 +1269,10 @@ $("toggleWrongList").onclick = () => {
   $("toggleWrongList").textContent = willShow ? "隱藏錯題清單" : "檢視錯題清單";
 };
 
-$("clearWrong").onclick = () => {
-  if (!confirm("確定要清空所有錯題嗎？")) return;
+$("clearWrong").onclick = async () => {
+  if (!(await askConfirm("確定要清空所有錯題嗎？", { confirmText: "確認清空", danger: true }))) return;
   saveWrongBook([]);
+  showNotice("已清空錯題簿", "info");
 };
 
 $("wrongList").onclick = async (e) => {
@@ -1245,7 +1342,7 @@ $("quiz").onclick = (e) => {
 };
 $("retry").onclick = () => {
   if (lastMode === "wrong" && !loadWrongBook().length) {
-    alert("錯題已全部移出錯題簿！");
+    showNotice("錯題已全部移出錯題簿！", "ok");
     $("quiz").hidden = true;
     $("result").hidden = true;
     $("setup").hidden = false;
@@ -1255,6 +1352,7 @@ $("retry").onclick = () => {
   startQuiz(lastMode);
 };
 $("backHome").onclick = () => {
+  hideNotice(false);
   $("quiz").hidden = true;
   $("result").hidden = true;
   $("setup").hidden = false;
