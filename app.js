@@ -7,6 +7,40 @@ let customBank = null;
 let picked = [];
 let lastMode = "normal";
 let isLoadingQuiz = false;
+let lastNavIdx = -1;
+
+function scrollToQuestion(idx) {
+  const box = $(`q${idx}`);
+  if (!box) return;
+  const navH = $("quizNav")?.offsetHeight || 96;
+  box.style.scrollMarginTop = `${navH + 12}px`;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+  const grid = $("quizNumGrid");
+  if (grid) {
+    grid.querySelectorAll(".q-chip.current").forEach((el) => el.classList.remove("current"));
+    grid.querySelector(`.q-chip[data-qidx="${idx}"]`)?.classList.add("current");
+  }
+  lastNavIdx = idx;
+}
+
+function updateQuizProgress() {
+  const progressEl = $("quizProgress");
+  if (!progressEl || !picked.length) return;
+  let answered = 0;
+  const grid = $("quizNumGrid");
+  for (let i = 0; i < picked.length; i++) {
+    const isChecked = Boolean($(`q${i}`)?.querySelector("input:checked"));
+    if (isChecked) answered++;
+    const chip = grid?.querySelector(`.q-chip[data-qidx="${i}"]`);
+    if (chip) chip.classList.toggle("answered", isChecked);
+  }
+  const remaining = picked.length - answered;
+  progressEl.innerHTML = `作答進度：<strong>${answered} / ${picked.length}</strong>${remaining > 0 ? `（剩 ${remaining} 題）` : "（已全部作答）"}`;
+  const fillEl = $("quizProgressFill");
+  if (fillEl) fillEl.style.width = `${Math.round((answered / picked.length) * 100)}%`;
+  const jumpBtn = $("jumpUnanswered");
+  if (jumpBtn) jumpBtn.hidden = answered >= picked.length;
+}
 
 async function fetchJsonMaybeGzip(url, fetchOpts = {}) {
   const resp = await fetch(url, fetchOpts);
@@ -639,7 +673,21 @@ async function startQuiz(mode = "normal") {
       return item;
     });
 
+    lastNavIdx = -1;
     $("quiz").innerHTML =
+      `<div id="quizNav" class="quiz-nav">
+        <div class="quiz-nav-head">
+          <span id="quizProgress" class="quiz-progress">作答進度：<strong>0 / ${picked.length}</strong>（剩 ${picked.length} 題）</span>
+          <div class="quiz-nav-actions">
+            <button type="button" id="jumpUnanswered" class="secondary quiz-nav-btn">跳至未作答</button>
+            <button type="button" id="toggleQuizGrid" class="secondary quiz-nav-btn" aria-expanded="false">展開題號</button>
+          </div>
+        </div>
+        <div class="quiz-progress-track"><div id="quizProgressFill" class="quiz-progress-fill"></div></div>
+        <div id="quizNumGrid" class="quiz-num-grid" hidden>
+          ${picked.map((_, i) => `<button type="button" class="q-chip" data-qidx="${i}" title="跳至第 ${i + 1} 題">${i + 1}</button>`).join("")}
+        </div>
+      </div>` +
       picked.map((q, i) => `
         <fieldset id="q${i}">
           <div class="q-title">${i + 1}. ${fmt(q.q)}</div>
@@ -652,6 +700,7 @@ async function startQuiz(mode = "normal") {
           <p class="explain" hidden></p>
         </fieldset>`).join("") +
       `<div class="quiz-actions"><button type="submit">交卷</button><button type="button" id="cancelQuiz" class="secondary">返回重選</button></div>`;
+    updateQuizProgress();
     $("cancelQuiz").onclick = () => {
       localStorage.setItem("seenQuestions", prevSeenJson);
       updateRepeatInfo();
@@ -760,7 +809,7 @@ function submit(e) {
     const suffix = unansweredNums.length > 10 ? " 等" : "";
     const preview = `（${previewList}${suffix}）`;
     if (!confirm(`還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`)) {
-      $(`q${unansweredNums[0] - 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      scrollToQuestion(unansweredNums[0] - 1);
       return;
     }
   }
@@ -807,6 +856,13 @@ function submit(e) {
       `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
       `</div>`;
     ex.hidden = false;
+
+    const chip = $("quizNumGrid")?.querySelector(`.q-chip[data-qidx="${i}"]`);
+    if (chip) {
+      chip.classList.remove("answered");
+      chip.classList.add(ok ? "right" : "wrong");
+      chip.title = `第 ${i + 1} 題：${ok ? "答對" : (chosen === null ? "未作答" : "答錯")}`;
+    }
   });
   renderWrongBook();
   const seenMap = loadSeenMap();
@@ -816,6 +872,11 @@ function submit(e) {
   updateRepeatInfo();
   $("quiz").querySelector(".quiz-actions").remove();
   const pct = Math.round((correct / picked.length) * 100);
+  if ($("jumpUnanswered")) $("jumpUnanswered").hidden = true;
+  if ($("quizProgress")) {
+    $("quizProgress").innerHTML = `批改結果：<strong>${correct} / ${picked.length}</strong>（答對 ${correct}、答錯 ${picked.length - correct}）`;
+  }
+  if ($("quizProgressFill")) $("quizProgressFill").style.width = `${pct}%`;
   const unansweredNote = unansweredNums.length ? `，未作答 ${unansweredNums.length} 題` : "";
   $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分${unansweredNote}）`;
   $("result").hidden = false;
@@ -985,7 +1046,38 @@ $("wrongList").onclick = async (e) => {
 $("start").onclick = () => startQuiz("normal");
 $("startWrong").onclick = () => startQuiz("wrong");
 $("quiz").onsubmit = submit;
+$("quiz").onchange = (e) => {
+  if (!e.target.matches('input[type="radio"]')) return;
+  const m = String(e.target.name || "").match(/^q(\d+)$/);
+  if (m) lastNavIdx = +m[1];
+  updateQuizProgress();
+};
 $("quiz").onclick = (e) => {
+  const chip = e.target.closest(".q-chip");
+  if (chip) {
+    scrollToQuestion(+chip.dataset.qidx);
+    return;
+  }
+  if (e.target.closest("#jumpUnanswered")) {
+    if (!picked.length) return;
+    const start = (lastNavIdx + 1) % picked.length;
+    for (let step = 0; step < picked.length; step++) {
+      const idx = (start + step) % picked.length;
+      if (!$(`q${idx}`)?.querySelector("input:checked")) {
+        scrollToQuestion(idx);
+        break;
+      }
+    }
+    return;
+  }
+  const toggleBtn = e.target.closest("#toggleQuizGrid");
+  if (toggleBtn && $("quizNumGrid")) {
+    const willHide = !$("quizNumGrid").hidden;
+    $("quizNumGrid").hidden = willHide;
+    toggleBtn.textContent = willHide ? "展開題號" : "收合題號";
+    toggleBtn.setAttribute("aria-expanded", String(!willHide));
+    return;
+  }
   const btn = e.target.closest(".gemini-btn");
   if (!btn) return;
   const q = picked[+btn.dataset.qidx];
