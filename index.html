@@ -3,7 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#2F5D50" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="物治國考" />
   <title>國考隨機抽題測驗</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -52,6 +59,8 @@
         <label class="file">匯入 CSV 題庫<input id="csvFile" type="file" accept=".csv" hidden /></label>
         <button id="toggleMoexSync" type="button" class="secondary">🔗 串聯考選部 OpenData 題庫</button>
         <button id="resetBank" class="secondary">使用考畢題答題庫</button>
+        <button id="offlineCacheBtn" type="button" class="secondary">離線下載全題庫</button>
+        <button id="installPwaBtn" type="button" class="secondary" hidden>安裝至主畫面</button>
         <a href="template.csv" download>下載 CSV 範本</a>
       </div>
 

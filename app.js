@@ -154,12 +154,140 @@ async function loadManifest(bustCache = false) {
   return manifest;
 }
 
+const PWA_DATA_CACHE = "pt-exam-data-v1";
+let isCachingOffline = false;
+let deferredInstallPrompt = null;
+
+function getChunkUrl(chunk) {
+  const ver = manifest?.buildId || manifest?.version || "";
+  return ver ? `data/chunks/${chunk.file}?v=${encodeURIComponent(ver)}` : `data/chunks/${chunk.file}`;
+}
+
+function resolveAppUrl(relUrl) {
+  try {
+    if (typeof location !== "undefined" && location.href && location.protocol !== "file:") {
+      return new URL(relUrl, location.href).href;
+    }
+  } catch {}
+  return relUrl;
+}
+
+async function refreshOfflineCacheStatus() {
+  const btn = $("offlineCacheBtn");
+  if (!btn || !manifest || isCachingOffline) return;
+  const total = manifest.chunks.length;
+  const isFile = typeof location !== "undefined" && location.protocol === "file:";
+  if (isFile || typeof caches === "undefined") {
+    btn.textContent = "離線下載全題庫（約 2.4 MB）";
+    return;
+  }
+  try {
+    const cache = await caches.open(PWA_DATA_CACHE);
+    const keys = typeof cache.keys === "function" ? await cache.keys() : null;
+    let cachedCount = 0;
+    if (keys) {
+      const keySet = new Set(keys.map((r) => r.url || String(r)));
+      for (const c of manifest.chunks) {
+        const rel = getChunkUrl(c);
+        if (keySet.has(resolveAppUrl(rel)) || keySet.has(rel)) cachedCount++;
+      }
+    } else {
+      for (const c of manifest.chunks) {
+        if (await cache.match(resolveAppUrl(getChunkUrl(c)))) cachedCount++;
+      }
+    }
+    if (cachedCount >= total && total > 0) {
+      btn.textContent = `離線題庫已就緒（${total}/${total}）`;
+    } else if (cachedCount > 0) {
+      btn.textContent = `離線下載全題庫（已快取 ${cachedCount}/${total}）`;
+    } else {
+      btn.textContent = "離線下載全題庫（約 2.4 MB）";
+    }
+  } catch {}
+}
+
+async function downloadAllChunksOffline() {
+  if (isCachingOffline) return;
+  const isFile = typeof location !== "undefined" && location.protocol === "file:";
+  if (isFile) {
+    return showNotice("file:// 本機檔案模式無法啟用離線快取，請使用網頁伺服器或 GitHub Pages 開啟。", "warn");
+  }
+  if (typeof caches === "undefined") {
+    return showNotice("此瀏覽器環境不支援離線快取（Cache Storage）。", "err");
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return showNotice("目前處於離線狀態，請連線後再下載全題庫。", "warn");
+  }
+
+  const btn = $("offlineCacheBtn");
+  isCachingOffline = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "準備下載離線題庫…";
+  }
+
+  try {
+    if (!manifest) await loadManifest();
+    const cache = await caches.open(PWA_DATA_CACHE);
+    const total = manifest.chunks.length;
+    const expectedUrls = new Set();
+    const toFetch = [];
+
+    const existingKeys = typeof cache.keys === "function" ? await cache.keys() : null;
+    const keySet = existingKeys ? new Set(existingKeys.map((r) => r.url || String(r))) : null;
+
+    for (const c of manifest.chunks) {
+      const rel = getChunkUrl(c);
+      const abs = resolveAppUrl(rel);
+      expectedUrls.add(abs);
+      expectedUrls.add(rel);
+      const hasIt = keySet ? (keySet.has(abs) || keySet.has(rel)) : Boolean(await cache.match(abs));
+      if (!hasIt) toFetch.push({ rel, abs });
+    }
+
+    let done = total - toFetch.length;
+    if (btn) btn.textContent = `下載離線題庫中 (${done}/${total})…`;
+
+    if (toFetch.length) {
+      let nextIdx = 0;
+      const concurrency = Math.min(6, toFetch.length);
+      async function worker() {
+        while (nextIdx < toFetch.length) {
+          const item = toFetch[nextIdx++];
+          const resp = await fetch(item.rel);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} 下載失敗：${item.rel}`);
+          await cache.put(item.abs, resp.clone());
+          done++;
+          if (btn) btn.textContent = `下載離線題庫中 (${done}/${total})…`;
+        }
+      }
+      await Promise.all(Array.from({ length: concurrency }, worker));
+    }
+
+    if (existingKeys) {
+      for (const req of existingKeys) {
+        const u = req.url || String(req);
+        if (u.includes("/data/chunks/") && !expectedUrls.has(u)) {
+          await cache.delete(req);
+        }
+      }
+    }
+
+    showNotice("全題庫離線下載完成（約 2.4 MB），無網路也能完整刷題！", "ok");
+  } catch (err) {
+    showNotice(`離線題庫下載失敗：${err?.message || err}`, "err");
+  } finally {
+    isCachingOffline = false;
+    if (btn) btn.disabled = false;
+    await refreshOfflineCacheStatus();
+  }
+}
+
 async function loadChunk(chunk) {
   if (!chunk) return [];
   if (chunkCache.has(chunk.file)) return chunkCache.get(chunk.file);
   if (inFlightChunks.has(chunk.file)) return inFlightChunks.get(chunk.file);
-  const ver = manifest?.buildId || manifest?.version || "";
-  const url = ver ? `data/chunks/${chunk.file}?v=${encodeURIComponent(ver)}` : `data/chunks/${chunk.file}`;
+  const url = getChunkUrl(chunk);
   const p = fetchJsonMaybeGzip(url)
     .then((arr) => {
       chunkCache.set(chunk.file, arr);
@@ -202,6 +330,7 @@ async function loadChunks(chunks, onProgress) {
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
+  refreshOfflineCacheStatus();
   return unique.map((c) => chunkCache.get(c.file));
 }
 
@@ -276,6 +405,7 @@ async function loadBank() {
   updateRepeatInfo();
   maybePrefetchSelection();
   renderWrongBook();
+  refreshOfflineCacheStatus();
 }
 
 // 簡易 CSV 解析（支援雙引號包住含逗號/換行的欄位）
@@ -795,7 +925,13 @@ async function startQuiz(mode = "normal") {
     $("quiz").hidden = false;
     window.scrollTo(0, 0);
   } catch (err) {
-    showNotice(`載入題目失敗：${err?.message || err}`, "err");
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    showNotice(
+      offline
+        ? "目前處於離線狀態且此範圍尚未快取。請改選已快取的年度／科目，或連線後點選「離線下載全題庫」。"
+        : `載入題目失敗：${err?.message || err}`,
+      "err"
+    );
   } finally {
     isLoadingQuiz = false;
     setLoadingState(false);
@@ -1487,6 +1623,49 @@ if ($("moexSyncBtn")) {
   };
 }
 
+function initPwa() {
+  const offlineBtn = $("offlineCacheBtn");
+  if (offlineBtn) offlineBtn.onclick = downloadAllChunksOffline;
+
+  const installBtn = $("installPwaBtn");
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      if (installBtn) installBtn.hidden = false;
+    });
+    window.addEventListener("appinstalled", () => {
+      deferredInstallPrompt = null;
+      if (installBtn) installBtn.hidden = true;
+      showNotice("已安裝至主畫面！之後可直接從桌面離線刷題。", "ok");
+    });
+    window.addEventListener("offline", () => {
+      showNotice("目前已離線，已快取的題庫與錯題簿仍可繼續練習。", "warn");
+    });
+    window.addEventListener("online", () => {
+      showNotice("已恢復網路連線。", "ok", 2500);
+    });
+  }
+
+  if (installBtn) {
+    installBtn.onclick = async () => {
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      try {
+        await deferredInstallPrompt.userChoice;
+      } catch {}
+      deferredInstallPrompt = null;
+      installBtn.hidden = true;
+    };
+  }
+
+  const isFile = typeof location !== "undefined" && location.protocol === "file:";
+  if (!isFile && typeof navigator !== "undefined" && navigator.serviceWorker?.register) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  }
+}
+
+initPwa();
 loadBank();
 renderWrongBook();
 renderHistory();

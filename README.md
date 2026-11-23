@@ -62,8 +62,11 @@
 | 檔案 | 固定職責 |
 | --- | --- |
 | `index.html` | 測驗設定、題目顯示與成績結果頁面結構（無任何 AI Key 輸入欄位） |
-| `app.js` | 題庫載入、CSV 匯入、題組抽題、`fmt()` 表格與圖片渲染、交卷批改與逐選項詳解顯示 |
+| `app.js` | 題庫載入、CSV 匯入、題組抽題、`fmt()` 表格與圖片渲染、交卷批改、各科統計與離線快取管理 |
 | `style.css` | 題目卡片、表格（`.q-table`）、圖片（`.q-img`）、對錯選項與詳解區塊（`.opt-note`）樣式 |
+| `manifest.webmanifest` | PWA 應用程式設定檔（支援加入手機主畫面與獨立視窗開啟） |
+| `sw.js` | Service Worker 離線快取腳本（App Shell 與題庫分塊／圖片快取） |
+| `icons/` | PWA 應用程式圖示（`icon.svg`、`icon-192.png`、`icon-512.png`） |
 | `option-explains.json` | 全題庫 2,880 題 × 4 選項（11,520 條）之繁體中文離線詳解來源檔 |
 | `build-bank.js` | 解析考選部試題與更正答案 PDF、合併 `TABLE_OVERRIDES` 與 `option-explains.json`、生成 `data/manifest.json` 與各年度／科目 gzip 分塊 `data/chunks/*.json.gz` |
 | `sync-moex.js` | 自動串聯考選部考畢試題查詢平臺（`wFrmExamQandASearch.aspx`）與 OpenData CSV，下載物理治療師試題／答案／更正答案並呼叫 `build-bank.js` 更新題庫 |

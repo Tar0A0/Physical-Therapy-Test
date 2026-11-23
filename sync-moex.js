@@ -494,6 +494,7 @@ const MIME_TYPES = {
   ".js": "application/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".gz": "application/gzip",
   ".csv": "text/csv; charset=utf-8",
   ".png": "image/png",
@@ -552,7 +553,8 @@ function startServer(port = 3000) {
     }
     const ext = path.extname(fullPath).toLowerCase();
     const headers = { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" };
-    if (path.basename(fullPath) === "manifest.json") {
+    const baseName = path.basename(fullPath);
+    if (baseName === "manifest.json" || baseName === "sw.js") {
       headers["Cache-Control"] = "no-cache";
     }
     res.writeHead(200, headers);
