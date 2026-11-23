@@ -815,6 +815,7 @@ function submit(e) {
   }
 
   let correct = 0;
+  const perSubject = new Map();
   const autoRemove = $("autoRemoveWrong").checked;
   picked.forEach((q, i) => {
     const box = $(`q${i}`);
@@ -823,6 +824,11 @@ function submit(e) {
     q.chosen = chosen;
     const ok = chosen !== null && (q.answers ? q.answers.includes(chosen) : chosen === q.answer);
     if (ok) correct++;
+    const subName = q.subject || "未分類";
+    const subStat = perSubject.get(subName) || { c: 0, t: 0 };
+    if (ok) subStat.c++;
+    subStat.t++;
+    perSubject.set(subName, subStat);
     const rawQ = q.rawQ || q;
     if (!ok) addWrongQuestion(rawQ);
     else if (autoRemove) removeWrongQuestion(getQKey(rawQ));
@@ -884,6 +890,7 @@ function submit(e) {
   const exam = $("exam").value;
   const baseLabel = exam && exam !== "全部" ? `${exam}・${$("subject").value}` : $("subject").value;
   const label = lastMode === "wrong" ? `[錯題] ${baseLabel}` : baseLabel;
+  recordSubjectStats(perSubject, submitTs);
   saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
 }
 
@@ -981,7 +988,83 @@ function renderWrongBook() {
   }).join("");
 }
 
-// ---------- 成績紀錄 ----------
+// ---------- 成績紀錄與各科統計 ----------
+function shortSubjectName(name) {
+  return String(name || "未分類").replace(/（[^）]*）$/, "");
+}
+
+function loadSubjectStats() {
+  const raw = localStorage.getItem("subjectStats");
+  if (raw !== null) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+
+  const stats = {};
+  let migrated = false;
+  try {
+    const h = JSON.parse(localStorage.getItem("examHistory") || "[]");
+    for (const r of [...h].reverse()) {
+      const clean = String(r?.subject || "").replace(/^\[錯題\]\s*/, "").trim();
+      const parts = clean.split("・");
+      const sub = parts[parts.length - 1]?.trim();
+      if (!sub || sub === "全部" || !r.total) continue;
+      if (!stats[sub]) stats[sub] = { correct: 0, total: 0, recent: [] };
+      stats[sub].correct += Number(r.correct) || 0;
+      stats[sub].total += Number(r.total) || 0;
+      stats[sub].recent.push({ c: Number(r.correct) || 0, t: Number(r.total) || 0, ts: 0 });
+      stats[sub].recent = stats[sub].recent.slice(-20);
+      migrated = true;
+    }
+  } catch {}
+  if (migrated) {
+    localStorage.setItem("subjectStats", JSON.stringify(stats));
+  }
+  return stats;
+}
+
+function recordSubjectStats(perSubject, ts = Date.now()) {
+  if (!perSubject || !perSubject.size) return;
+  const stats = loadSubjectStats();
+  for (const [sub, { c, t }] of perSubject.entries()) {
+    if (!t) continue;
+    if (!stats[sub]) stats[sub] = { correct: 0, total: 0, recent: [] };
+    stats[sub].correct += c;
+    stats[sub].total += t;
+    stats[sub].recent = [...(stats[sub].recent || []), { c, t, ts }].slice(-20);
+  }
+  localStorage.setItem("subjectStats", JSON.stringify(stats));
+}
+
+function computeSubjectTrend(recent) {
+  const list = (recent || []).filter((x) => x && x.t > 0);
+  if (list.length < 2) {
+    return {
+      cls: "trend-flat",
+      label: list.length === 1 ? "首次作答" : "—",
+      title: "作答達 2 次以上即可計算近期趨勢",
+    };
+  }
+  const win = list.slice(-10);
+  const mid = Math.floor(win.length / 2);
+  const prevSlice = win.slice(0, mid);
+  const currSlice = win.slice(mid);
+  const calcPct = (arr) => {
+    const tot = arr.reduce((s, x) => s + x.t, 0);
+    const cor = arr.reduce((s, x) => s + x.c, 0);
+    return tot ? Math.round((cor / tot) * 100) : 0;
+  };
+  const prevPct = calcPct(prevSlice);
+  const currPct = calcPct(currSlice);
+  const diff = currPct - prevPct;
+  const title = `近期 ${currPct}% vs 前期 ${prevPct}%（近 ${win.length} 次）`;
+  if (diff >= 3) return { cls: "trend-up", label: `▲ +${diff}%`, title };
+  if (diff <= -3) return { cls: "trend-down", label: `▼ ${diff}%`, title };
+  return { cls: "trend-flat", label: `→ 持平（${currPct}%）`, title };
+}
+
 function saveHistory(entry) {
   const h = JSON.parse(localStorage.getItem("examHistory") || "[]");
   h.unshift(entry);
@@ -990,15 +1073,92 @@ function saveHistory(entry) {
 }
 
 function renderHistory() {
+  const stats = loadSubjectStats();
   const h = JSON.parse(localStorage.getItem("examHistory") || "[]");
-  $("history").hidden = !h.length;
+  const entries = Object.entries(stats)
+    .filter(([, s]) => s && s.total > 0)
+    .map(([subject, s]) => ({
+      subject,
+      correct: s.correct,
+      total: s.total,
+      pct: Math.round((s.correct / s.total) * 100),
+      ratio: s.correct / s.total,
+      recent: s.recent || [],
+    }))
+    .sort((a, b) => a.pct - b.pct || a.ratio - b.ratio || b.total - a.total);
+
+  $("history").hidden = !entries.length && !h.length;
+
+  if ($("statsSummary")) {
+    if (entries.length) {
+      const sumCorrect = entries.reduce((s, e) => s + e.correct, 0);
+      const sumTotal = entries.reduce((s, e) => s + e.total, 0);
+      const avgPct = Math.round((sumCorrect / sumTotal) * 100);
+      const weakList = entries.filter((e) => e.pct < 60);
+      const weakNote = weakList.length
+        ? `・弱科（<60%）：${weakList.map((e) => `${shortSubjectName(e.subject)} ${e.pct}%`).join("、")}`
+        : "・目前各科皆達 60% 以上";
+      $("statsSummary").textContent = `總累計作答 ${sumTotal} 題・平均正確率 ${avgPct}%${weakNote}`;
+    } else {
+      $("statsSummary").textContent = "";
+    }
+  }
+
+  if ($("subjectStatsList")) {
+    $("subjectStatsList").innerHTML = entries.map((e) => {
+      const tierCls = e.pct < 60 ? " is-weak" : (e.pct < 80 ? " is-mid" : "");
+      const trend = computeSubjectTrend(e.recent);
+      const barsHtml = e.recent.slice(-8).map((r) => {
+        const rp = r.t ? Math.round((r.c / r.t) * 100) : 0;
+        const hPx = Math.max(3, Math.round((rp / 100) * 20));
+        return `<span class="trend-bar${rp < 60 ? " low" : ""}" style="height:${hPx}px" title="${r.c}/${r.t}（${rp}%）"></span>`;
+      }).join("");
+      return `
+        <div class="stat-row${tierCls}">
+          <div class="stat-head">
+            <span class="stat-name" title="${esc(e.subject)}">${esc(shortSubjectName(e.subject))}${e.pct < 60 ? '<span class="weak-badge">弱科</span>' : ""}</span>
+            <span class="stat-nums"><span class="stat-pct">${e.pct}%</span>（${e.correct} / ${e.total} 題）</span>
+          </div>
+          <div class="stat-bar-track" title="虛線標記為 60% 及格線">
+            <div class="stat-bar-fill" style="width:${e.pct}%"></div>
+            <div class="stat-pass-mark"></div>
+          </div>
+          <div class="stat-trend">
+            <span>近期走勢：${barsHtml ? `<span class="trend-bars">${barsHtml}</span>` : "—"}</span>
+            <span class="${trend.cls}" title="${esc(trend.title)}">${esc(trend.label)}</span>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
   $("historyList").innerHTML = h
     .map((r) => `<tr><td>${esc(r.time)}</td><td>${esc(r.subject)}</td><td>${r.correct}/${r.total}</td><td>${r.pct}</td></tr>`)
     .join("");
+  if ($("toggleRecentHistory")) {
+    $("toggleRecentHistory").hidden = !h.length;
+    if (!h.length && $("recentHistoryWrap")) {
+      $("recentHistoryWrap").hidden = true;
+      $("toggleRecentHistory").textContent = "檢視最近紀錄";
+    }
+  }
+}
+
+if ($("toggleRecentHistory")) {
+  $("toggleRecentHistory").onclick = () => {
+    const wrap = $("recentHistoryWrap");
+    if (!wrap) return;
+    const willShow = wrap.hidden;
+    wrap.hidden = !willShow;
+    $("toggleRecentHistory").textContent = willShow ? "隱藏最近紀錄" : "檢視最近紀錄";
+  };
 }
 
 $("clearHistory").onclick = () => {
+  if (!confirm("確定要清除所有各科統計與最近成績紀錄嗎？")) return;
+  localStorage.removeItem("subjectStats");
   localStorage.removeItem("examHistory");
+  if ($("recentHistoryWrap")) $("recentHistoryWrap").hidden = true;
+  if ($("toggleRecentHistory")) $("toggleRecentHistory").textContent = "檢視最近紀錄";
   renderHistory();
 };
 

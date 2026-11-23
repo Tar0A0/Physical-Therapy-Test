@@ -80,12 +80,19 @@
       </div>
 
       <div id="history" hidden>
-        <h3>最近成績</h3>
-        <table>
-          <thead><tr><th>時間</th><th>科目</th><th>答對</th><th>分數</th></tr></thead>
-          <tbody id="historyList"></tbody>
-        </table>
-        <button id="clearHistory" class="secondary">清除紀錄</button>
+        <h3>各科正確率統計</h3>
+        <p id="statsSummary" class="stats-summary"></p>
+        <div id="subjectStatsList" class="stats-list"></div>
+        <div class="history-actions">
+          <button id="toggleRecentHistory" type="button" class="secondary" hidden>檢視最近紀錄</button>
+          <button id="clearHistory" type="button" class="secondary">清除統計與紀錄</button>
+        </div>
+        <div id="recentHistoryWrap" hidden>
+          <table>
+            <thead><tr><th>時間</th><th>科目</th><th>答對</th><th>分數</th></tr></thead>
+            <tbody id="historyList"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
