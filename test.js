@@ -497,6 +497,43 @@ async function testPwaAndPopupFallback() {
   assert(hCtrl.getEl("noticeBar").innerHTML.includes("開啟 Gemini ↗"));
 }
 
+async function testFirstTimeUiDefaults() {
+  const h = createAppHarness();
+  const presetBtns = [10, 20, 50, 80].map((n) => ({
+    dataset: { count: String(n) },
+    classList: makeClassList(),
+  }));
+  h.getEl("countPresets").querySelectorAll = () => presetBtns;
+  h.getEl("count").value = "10";
+  h.ctx.syncCountPresetUI();
+
+  await h.waitReady();
+
+  // Friendly bank label and hidden resetBank when using built-in bank
+  assert(h.getEl("bankInfo").textContent.includes("歷屆國考題庫（108–115 年，共 7,680 題）"));
+  assert.strictEqual(h.getEl("resetBank").hidden, true);
+
+  // Calm empty wrong-book state
+  assert(h.getEl("wrongSection").classList.contains("is-empty"));
+  assert.strictEqual(h.getEl("wrongActions").hidden, true);
+
+  // Preset click updates #count and active class
+  assert(presetBtns[0].classList.contains("active"));
+  h.getEl("countPresets").onclick({ target: { closest: () => presetBtns[2] } });
+  assert.strictEqual(h.getEl("count").value, "50");
+  assert(!presetBtns[0].classList.contains("active") && presetBtns[2].classList.contains("active"));
+
+  // CSV bank unhides resetBank; adding a wrong question unhides wrongActions
+  h.store.set("examBank", JSON.stringify([{ subject: "骨科", q: "題目", options: ["A", "B"], answer: 0 }]));
+  await h.ctx.loadBank();
+  assert.strictEqual(h.getEl("resetBank").hidden, false);
+
+  h.ctx.addWrongQuestion({ exam: "115年第二次", subject: "神經疾病物理治療學", num: 1, q: "錯題", options: ["A", "B"], answer: 0 });
+  h.ctx.renderWrongBook();
+  assert(!h.getEl("wrongSection").classList.contains("is-empty"));
+  assert.strictEqual(h.getEl("wrongActions").hidden, false);
+}
+
 (async () => {
   await testChunksAndDecompression();
   await testServiceWorker();
@@ -504,6 +541,7 @@ async function testPwaAndPopupFallback() {
   await testBlankSubmitAndRaces();
   await testStatsAndTrends();
   await testPwaAndPopupFallback();
+  await testFirstTimeUiDefaults();
   console.log("All test.js suites passed!");
 })().catch((err) => {
   console.error(err);

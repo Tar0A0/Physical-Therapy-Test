@@ -26,28 +26,44 @@
         <label>科目
           <select id="subject"></select>
         </label>
-        <label>題數
-          <input id="count" type="number" min="1" value="1" />
+        <label class="count-field">題數
+          <div class="count-input-wrap">
+            <input id="count" type="number" min="1" value="10" />
+            <div id="countPresets" class="count-presets" aria-label="常用題數">
+              <button type="button" class="secondary preset-btn" data-count="10">10</button>
+              <button type="button" class="secondary preset-btn" data-count="20">20</button>
+              <button type="button" class="secondary preset-btn" data-count="50">50</button>
+              <button type="button" class="secondary preset-btn" data-count="80">80</button>
+            </div>
+          </div>
         </label>
-        <label>避免重複
-          <select id="noRepeatMode">
-            <option value="paper">同份考卷／範圍抽完前不重複</option>
-            <option value="1h">1 小時內不重複</option>
-            <option value="6h">6 小時內不重複</option>
-            <option value="24h">24 小時（1 天）內不重複</option>
-            <option value="3d">3 天內不重複</option>
-            <option value="7d">7 天內不重複</option>
-            <option value="30d">30 天內不重複</option>
-            <option value="custom">自訂時效（小時）</option>
-            <option value="off">不限制（可重複抽題）</option>
-          </select>
-        </label>
-        <label id="customHoursWrap" hidden>時效（小時）
-          <input id="noRepeatHours" type="number" min="1" value="12" />
-        </label>
-        <label class="inline"><input id="mixOptions" type="checkbox" checked /> 選項順序也打亂</label>
         <button id="start">開始抽題</button>
       </div>
+
+      <details id="advancedQuiz" class="fold-panel">
+        <summary>進階抽題設定（避免重複、打亂選項）</summary>
+        <div class="fold-body">
+          <div class="fold-grid">
+            <label>避免重複
+              <select id="noRepeatMode">
+                <option value="paper">同份考卷／範圍抽完前不重複</option>
+                <option value="1h">1 小時內不重複</option>
+                <option value="6h">6 小時內不重複</option>
+                <option value="24h">24 小時（1 天）內不重複</option>
+                <option value="3d">3 天內不重複</option>
+                <option value="7d">7 天內不重複</option>
+                <option value="30d">30 天內不重複</option>
+                <option value="custom">自訂時效（小時）</option>
+                <option value="off">不限制（可重複抽題）</option>
+              </select>
+            </label>
+            <label id="customHoursWrap" hidden>時效（小時）
+              <input id="noRepeatHours" type="number" min="1" value="12" />
+            </label>
+          </div>
+          <label class="inline"><input id="mixOptions" type="checkbox" checked /> 選項順序也打亂</label>
+        </div>
+      </details>
 
       <div id="repeatBar" class="repeat-bar">
         <span id="repeatInfo"></span>
@@ -56,30 +72,39 @@
 
       <div class="bank">
         <span id="bankInfo"></span>
-        <label class="file">匯入 CSV 題庫<input id="csvFile" type="file" accept=".csv" hidden /></label>
-        <button id="toggleMoexSync" type="button" class="secondary">🔗 串聯考選部 OpenData 題庫</button>
-        <button id="resetBank" class="secondary">使用考畢題答題庫</button>
-        <button id="offlineCacheBtn" type="button" class="secondary">離線下載全題庫</button>
+        <button id="resetBank" type="button" class="secondary" hidden>切回歷屆國考題庫</button>
+        <button id="offlineCacheBtn" type="button" class="secondary" title="平時點到才載入；搭車無網路前可先下載全部題庫">離線下載全題庫</button>
         <button id="installPwaBtn" type="button" class="secondary" hidden>安裝至主畫面</button>
-        <a href="template.csv" download>下載 CSV 範本</a>
       </div>
+      <p id="iosInstallHint" class="ios-hint" hidden>iPhone 加入桌面：點選瀏覽器下方「分享」→「加入主畫面」，通勤無網路也能刷題。</p>
 
-      <div id="moexSyncPanel" class="moex-sync-panel" hidden>
-        <div class="moex-sync-row">
-          <label class="moex-url-label">考選部考畢試題網址 / 考試代碼 / 年度
-            <input id="moexUrlInput" type="url" value="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" placeholder="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" />
-          </label>
-          <button id="moexSyncBtn" type="button">立即同步題庫</button>
-          <button id="moexCopyCmdBtn" type="button" class="secondary">複製同步指令</button>
-          <a href="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" target="_blank" rel="noopener">開啟考選部平臺 ↗</a>
+      <details id="advancedBank" class="fold-panel">
+        <summary>進階題庫管理（匯入 CSV、考選部同步）</summary>
+        <div class="fold-body">
+          <div class="fold-actions">
+            <label class="file">匯入 CSV 題庫<input id="csvFile" type="file" accept=".csv" hidden /></label>
+            <a href="template.csv" download>下載 CSV 範本</a>
+            <button id="toggleMoexSync" type="button" class="secondary">考選部 OpenData 同步</button>
+          </div>
+
+          <div id="moexSyncPanel" class="moex-sync-panel" hidden>
+            <div class="moex-sync-row">
+              <label class="moex-url-label">考選部考畢試題網址 / 考試代碼 / 年度
+                <input id="moexUrlInput" type="url" value="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" placeholder="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" />
+              </label>
+              <button id="moexSyncBtn" type="button">立即同步題庫</button>
+              <button id="moexCopyCmdBtn" type="button" class="secondary">複製同步指令</button>
+              <a href="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx?y=2025&e=114090" target="_blank" rel="noopener">開啟考選部平臺 ↗</a>
+            </div>
+            <p id="moexSyncStatus" class="moex-status">支援自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建題庫。本機啟動 <code>node sync-moex.js --serve</code> 後可於此一鍵同步，或於終端機執行 <code>node sync-moex.js</code>。</p>
+          </div>
         </div>
-        <p id="moexSyncStatus" class="moex-status">支援自動抓取「專技高考_物理治療師」試題、答案與更正答案 PDF 並重建題庫。本機啟動 <code>node sync-moex.js --serve</code> 後可於此一鍵同步，或於終端機執行 <code>node sync-moex.js</code>。</p>
-      </div>
+      </details>
 
       <div id="wrongSection" class="wrong-section">
         <div class="wrong-header">
-          <strong id="wrongInfo">錯題簿：目前無錯題</strong>
-          <div class="wrong-actions">
+          <strong id="wrongInfo">錯題簿：尚無錯題</strong>
+          <div id="wrongActions" class="wrong-actions" hidden>
             <button id="startWrong" type="button" disabled>錯題測驗</button>
             <button id="toggleWrongList" type="button" class="secondary" hidden>檢視錯題清單</button>
             <label class="inline"><input id="autoRemoveWrong" type="checkbox" /> 答對自動移出</label>

@@ -361,6 +361,7 @@ async function loadBank() {
   if (saved && saved.length) {
     customBank = saved;
     $("bankInfo").textContent = `目前題庫：匯入的 CSV（${customBank.length} 題）`;
+    if ($("resetBank")) $("resetBank").hidden = false;
     const exams = ["全部", ...new Set(customBank.map((q) => q.exam).filter(Boolean))];
     $("exam").innerHTML = exams.map((x) => `<option>${esc(x)}</option>`).join("");
     $("exam").closest("label").hidden = exams.length <= 1;
@@ -373,6 +374,7 @@ async function loadBank() {
   }
 
   customBank = null;
+  if ($("resetBank")) $("resetBank").hidden = true;
   if (!manifest) {
     $("bankInfo").textContent = "目前題庫：正在載入題庫索引…";
     $("start").disabled = true;
@@ -389,7 +391,10 @@ async function loadBank() {
     }
   }
 
-  $("bankInfo").textContent = `目前題庫：考畢題答（${manifest.total} 題）`;
+  const firstYear = manifest.exams[0]?.match(/^\d+/)?.[0];
+  const lastYear = manifest.exams[manifest.exams.length - 1]?.match(/^\d+/)?.[0];
+  const rangeText = firstYear && lastYear && firstYear !== lastYear ? `${firstYear}–${lastYear} 年，` : "";
+  $("bankInfo").textContent = `歷屆國考題庫（${rangeText}共 ${manifest.total.toLocaleString()} 題）`;
   const exams = ["全部", ...manifest.exams];
   $("exam").innerHTML = exams.map((x) => `<option>${esc(x)}</option>`).join("");
   $("exam").closest("label").hidden = exams.length <= 1;
@@ -1082,8 +1087,8 @@ async function submit(e) {
       ex.innerHTML = `${statusText}${q.explain ? "｜" + esc(q.explain) : ""}` +
         (source ? `<div class="q-source">出處：${esc(source)}</div>` : "") +
         `<div class="gemini-bar">` +
-        `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">問問 Gemini（自動帶入詢問）</button>` +
-        `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">Gemini App（複製貼上）</button>` +
+        `<button type="button" class="gemini-btn" data-qidx="${i}" data-target="aiMode">問問 Gemini（網頁搜尋）</button>` +
+        `<button type="button" class="gemini-btn secondary" data-qidx="${i}" data-target="geminiApp">複製題目到 Gemini App</button>` +
         `</div>`;
       ex.hidden = false;
 
@@ -1176,7 +1181,11 @@ function removeWrongQuestion(key) {
 
 function renderWrongBook() {
   const list = loadWrongBook();
-  $("wrongInfo").textContent = list.length ? `錯題簿：共 ${list.length} 題` : "錯題簿：目前無錯題";
+  $("wrongSection")?.classList.toggle("is-empty", !list.length);
+  if ($("wrongActions")) $("wrongActions").hidden = !list.length;
+  $("wrongInfo").textContent = list.length
+    ? `錯題簿：共 ${list.length} 題`
+    : "錯題簿：尚無錯題（答錯或未作答的題目會自動收錄於此）";
   $("startWrong").disabled = !list.length;
   $("toggleWrongList").hidden = !list.length;
   $("clearWrong").hidden = !list.length;
@@ -1195,8 +1204,8 @@ function renderWrongBook() {
         <div class="wrong-meta">
           <span>${esc(source)}｜錯 ${q.wrongCount || 1} 次${q.lastTime ? `｜${esc(q.lastTime)}` : ""}</span>
           <div class="wrong-meta-actions">
-            <button type="button" class="gemini-btn wrong-gemini" data-key="${esc(key)}" data-target="aiMode">問問 Gemini（自動帶入）</button>
-            <button type="button" class="gemini-btn secondary wrong-gemini" data-key="${esc(key)}" data-target="geminiApp">Gemini App（複製貼上）</button>
+            <button type="button" class="gemini-btn wrong-gemini" data-key="${esc(key)}" data-target="aiMode">問問 Gemini（網頁搜尋）</button>
+            <button type="button" class="gemini-btn secondary wrong-gemini" data-key="${esc(key)}" data-target="geminiApp">複製題目到 Gemini App</button>
             <button type="button" class="secondary wrong-remove" data-key="${esc(key)}">移出</button>
           </div>
         </div>
@@ -1620,9 +1629,39 @@ if ($("moexSyncBtn")) {
   };
 }
 
+function syncCountPresetUI() {
+  const presets = $("countPresets");
+  if (!presets) return;
+  const cur = String(+$("count")?.value || "");
+  presets.querySelectorAll(".preset-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.count === cur);
+  });
+}
+
+if ($("countPresets")) {
+  $("countPresets").onclick = (e) => {
+    const btn = e.target.closest(".preset-btn");
+    if (!btn) return;
+    $("count").value = btn.dataset.count;
+    syncCountPresetUI();
+  };
+}
+if ($("count")) {
+  $("count").oninput = syncCountPresetUI;
+  $("count").onchange = syncCountPresetUI;
+}
+syncCountPresetUI();
+
 function initPwa() {
   const offlineBtn = $("offlineCacheBtn");
   if (offlineBtn) offlineBtn.onclick = downloadAllChunksOffline;
+
+  const iosHint = $("iosInstallHint");
+  if (iosHint && typeof navigator !== "undefined") {
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+    const isStandalone = Boolean(navigator.standalone) || Boolean(window.matchMedia?.("(display-mode: standalone)")?.matches);
+    iosHint.hidden = !(isIos && !isStandalone);
+  }
 
   const installBtn = $("installPwaBtn");
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {

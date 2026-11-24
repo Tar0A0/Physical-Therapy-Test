@@ -211,6 +211,110 @@ h1::after {
   padding-top: 0.15rem;
 }
 
+#setup .row label.count-field {
+  grid-column: 1 / -1;
+}
+
+.count-input-wrap {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.count-input-wrap input[type="number"] {
+  width: 6.5rem;
+  flex: 0 0 auto;
+}
+
+.count-presets {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+button.preset-btn {
+  padding: 0.42rem 0.72rem;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+button.preset-btn.active,
+button.preset-btn.active:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: #FFFDF8;
+  border-color: var(--color-primary);
+}
+
+.fold-panel {
+  margin-top: 0.85rem;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+
+.fold-panel summary {
+  padding: 0.55rem 0.85rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fold-panel[open] summary {
+  border-bottom: 1px solid var(--border-line);
+  color: var(--text-ink);
+}
+
+.fold-body {
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.fold-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem 1.25rem;
+  align-items: end;
+}
+
+.fold-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.fold-body label.inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-ink);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.fold-actions {
+  display: flex;
+  gap: 0.6rem 0.8rem;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.ios-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
 #start {
   grid-column: 1 / -1;
   justify-self: start;
@@ -284,7 +388,8 @@ button.secondary:hover:not(:disabled) {
   border-color: var(--color-primary-hover);
 }
 
-.bank .file {
+.bank .file,
+.fold-actions .file {
   display: inline-block;
   padding: 0.45rem 0.95rem;
   font-size: 0.88rem;
@@ -297,7 +402,8 @@ button.secondary:hover:not(:disabled) {
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.bank .file:hover {
+.bank .file:hover,
+.fold-actions .file:hover {
   background: var(--bg-hover);
   color: var(--color-primary-hover);
   border-color: var(--color-primary-hover);
@@ -451,6 +557,18 @@ button.gemini-btn.copied:hover:not(:disabled) {
   border: 1px solid var(--border-line);
   border-left: 3px solid var(--color-danger);
   border-radius: 2px;
+}
+
+.wrong-section.is-empty {
+  border-left-color: var(--border-strong);
+  padding: 0.78rem 1rem;
+}
+
+.wrong-section.is-empty #wrongInfo {
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
 .wrong-header {
@@ -1088,12 +1206,14 @@ button.quiz-nav-btn {
     letter-spacing: 0.08em;
   }
 
-  #setup .row {
+  #setup .row,
+  .fold-grid {
     grid-template-columns: 1fr;
   }
 
   .repeat-bar,
   .bank,
+  .fold-actions,
   .wrong-header,
   .wrong-actions,
   .moex-sync-row,
@@ -1108,6 +1228,8 @@ button.quiz-nav-btn {
   .repeat-bar button,
   .bank button,
   .bank .file,
+  .fold-actions button,
+  .fold-actions .file,
   .moex-sync-row button,
   .wrong-actions button,
   .wrong-meta-actions button,
@@ -1134,6 +1256,7 @@ button.quiz-nav-btn {
 
   .quiz-nav-btn,
   .q-chip,
+  .preset-btn,
   .notice-close {
     width: auto;
   }
