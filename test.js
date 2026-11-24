@@ -499,12 +499,12 @@ async function testPwaAndPopupFallback() {
 
 async function testFirstTimeUiDefaults() {
   const h = createAppHarness();
-  const presetBtns = [10, 20, 50, 80].map((n) => ({
+  const presetBtns = [1, 10, 20, 50, 80].map((n) => ({
     dataset: { count: String(n) },
     classList: makeClassList(),
   }));
   h.getEl("countPresets").querySelectorAll = () => presetBtns;
-  h.getEl("count").value = "10";
+  h.getEl("count").value = "1";
   h.ctx.syncCountPresetUI();
 
   await h.waitReady();
@@ -519,9 +519,9 @@ async function testFirstTimeUiDefaults() {
 
   // Preset click updates #count and active class
   assert(presetBtns[0].classList.contains("active"));
-  h.getEl("countPresets").onclick({ target: { closest: () => presetBtns[2] } });
+  h.getEl("countPresets").onclick({ target: { closest: () => presetBtns[3] } });
   assert.strictEqual(h.getEl("count").value, "50");
-  assert(!presetBtns[0].classList.contains("active") && presetBtns[2].classList.contains("active"));
+  assert(!presetBtns[0].classList.contains("active") && presetBtns[3].classList.contains("active"));
 
   // CSV bank unhides resetBank; adding a wrong question unhides wrongActions
   h.store.set("examBank", JSON.stringify([{ subject: "骨科", q: "題目", options: ["A", "B"], answer: 0 }]));
