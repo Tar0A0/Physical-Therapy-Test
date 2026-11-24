@@ -7,7 +7,8 @@ let customBank = null;
 let picked = [];
 let lastMode = "normal";
 let isLoadingQuiz = false;
-let isSubmitting = false;
+let isGrading = false;
+let submitToken = 0;
 let lastNavIdx = -1;
 let noticeTimer = null;
 let pendingConfirmResolve = null;
@@ -34,14 +35,18 @@ function hideNotice(resolveValue = false) {
   }
 }
 
-function showNotice(message, type = "info", durationMs = type === "err" ? 6000 : 4500) {
+function showNotice(message, type = "info", durationMs = type === "err" ? 6000 : 4500, actionLink = null) {
   hideNotice(false);
   const bar = $("noticeBar");
   if (!bar) return;
   bar.className = "notice-bar" + (type && type !== "info" && type !== "ok" ? ` is-${type}` : "");
   bar.setAttribute("role", "status");
+  const linkHtml = actionLink?.url
+    ? `<a class="notice-link" href="${esc(actionLink.url)}" target="_blank" rel="noopener">${esc(actionLink.text || "開啟連結")}</a>`
+    : "";
   bar.innerHTML =
     `<div class="notice-msg">${esc(message)}</div>` +
+    linkHtml +
     `<button type="button" id="noticeCloseBtn" class="notice-close" aria-label="關閉提示">✕</button>`;
   bar.hidden = false;
   if ($("noticeCloseBtn")) $("noticeCloseBtn").onclick = () => hideNotice(false);
@@ -172,6 +177,14 @@ function resolveAppUrl(relUrl) {
   return relUrl;
 }
 
+async function runPool(items, limit, fn) {
+  let nextIdx = 0;
+  const workers = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workers }, async () => {
+    while (nextIdx < items.length) await fn(items[nextIdx++]);
+  }));
+}
+
 async function refreshOfflineCacheStatus() {
   const btn = $("offlineCacheBtn");
   if (!btn || !manifest || isCachingOffline) return;
@@ -183,18 +196,11 @@ async function refreshOfflineCacheStatus() {
   }
   try {
     const cache = await caches.open(PWA_DATA_CACHE);
-    const keys = typeof cache.keys === "function" ? await cache.keys() : null;
+    const keySet = new Set((await cache.keys()).map((r) => r.url || String(r)));
     let cachedCount = 0;
-    if (keys) {
-      const keySet = new Set(keys.map((r) => r.url || String(r)));
-      for (const c of manifest.chunks) {
-        const rel = getChunkUrl(c);
-        if (keySet.has(resolveAppUrl(rel)) || keySet.has(rel)) cachedCount++;
-      }
-    } else {
-      for (const c of manifest.chunks) {
-        if (await cache.match(resolveAppUrl(getChunkUrl(c)))) cachedCount++;
-      }
+    for (const c of manifest.chunks) {
+      const rel = getChunkUrl(c);
+      if (keySet.has(resolveAppUrl(rel)) || keySet.has(rel)) cachedCount++;
     }
     if (cachedCount >= total && total > 0) {
       btn.textContent = `離線題庫已就緒（${total}/${total}）`;
@@ -233,43 +239,37 @@ async function downloadAllChunksOffline() {
     const expectedUrls = new Set();
     const toFetch = [];
 
-    const existingKeys = typeof cache.keys === "function" ? await cache.keys() : null;
-    const keySet = existingKeys ? new Set(existingKeys.map((r) => r.url || String(r))) : null;
+    const existingKeys = await cache.keys();
+    const keySet = new Set(existingKeys.map((r) => r.url || String(r)));
 
     for (const c of manifest.chunks) {
       const rel = getChunkUrl(c);
       const abs = resolveAppUrl(rel);
       expectedUrls.add(abs);
       expectedUrls.add(rel);
-      const hasIt = keySet ? (keySet.has(abs) || keySet.has(rel)) : Boolean(await cache.match(abs));
-      if (!hasIt) toFetch.push({ rel, abs });
+      if (!keySet.has(abs) && !keySet.has(rel)) toFetch.push({ rel, abs });
     }
 
     let done = total - toFetch.length;
     if (btn) btn.textContent = `下載離線題庫中 (${done}/${total})…`;
 
     if (toFetch.length) {
-      let nextIdx = 0;
-      const concurrency = Math.min(6, toFetch.length);
-      async function worker() {
-        while (nextIdx < toFetch.length) {
-          const item = toFetch[nextIdx++];
-          const resp = await fetch(item.rel);
-          if (!resp.ok) throw new Error(`HTTP ${resp.status} 下載失敗：${item.rel}`);
-          await cache.put(item.abs, resp.clone());
-          done++;
-          if (btn) btn.textContent = `下載離線題庫中 (${done}/${total})…`;
+      const hasSwController = typeof navigator !== "undefined" && Boolean(navigator.serviceWorker?.controller);
+      await runPool(toFetch, 6, async (item) => {
+        const resp = await fetch(item.rel);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} 下載失敗：${item.rel}`);
+        if (!hasSwController) {
+          await cache.put(item.abs, resp);
         }
-      }
-      await Promise.all(Array.from({ length: concurrency }, worker));
+        done++;
+        if (btn) btn.textContent = `下載離線題庫中 (${done}/${total})…`;
+      });
     }
 
-    if (existingKeys) {
-      for (const req of existingKeys) {
-        const u = req.url || String(req);
-        if (u.includes("/data/chunks/") && !expectedUrls.has(u)) {
-          await cache.delete(req);
-        }
+    for (const req of existingKeys) {
+      const u = req.url || String(req);
+      if (u.includes("/data/chunks/") && !expectedUrls.has(u)) {
+        await cache.delete(req);
       }
     }
 
@@ -319,17 +319,11 @@ async function loadChunks(chunks, onProgress) {
   if (onProgress) onProgress(done, total);
   if (!toFetch.length) return unique.map((c) => chunkCache.get(c.file));
 
-  const concurrency = Math.min(6, toFetch.length);
-  let nextIdx = 0;
-  async function worker() {
-    while (nextIdx < toFetch.length) {
-      const chunk = toFetch[nextIdx++];
-      await loadChunk(chunk);
-      done++;
-      if (onProgress) onProgress(done, total);
-    }
-  }
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  await runPool(toFetch, 6, async (chunk) => {
+    await loadChunk(chunk);
+    done++;
+    if (onProgress) onProgress(done, total);
+  });
   refreshOfflineCacheStatus();
   return unique.map((c) => chunkCache.get(c.file));
 }
@@ -777,92 +771,81 @@ async function startQuiz(mode = "normal") {
       }
 
       const avail = chunkUnseen.filter((x) => x.unseen > 0);
-      if (avail.length === 1) {
-        setLoadingState(true, 0, 1);
-        const [qs] = await loadChunks([avail[0].chunk], (done, total) => setLoadingState(true, done, total));
+      const drawCount = Math.min(n, totalUnseen);
+      const pickedIndices = sampleDistinctIndices(totalUnseen, drawCount).sort((a, b) => a - b);
+      const quotaMap = new Map();
+      let offset = 0;
+      let ptr = 0;
+      for (const entry of avail) {
+        const end = offset + entry.unseen;
+        let qCount = 0;
+        while (ptr < pickedIndices.length && pickedIndices[ptr] < end) {
+          qCount++;
+          ptr++;
+        }
+        if (qCount > 0) quotaMap.set(entry.chunk.file, qCount);
+        offset = end;
+      }
+
+      const initialChunks = avail.filter((x) => quotaMap.has(x.chunk.file)).map((x) => x.chunk);
+      const remainingPool = shuffle(avail.filter((x) => !quotaMap.has(x.chunk.file)).map((x) => x.chunk));
+      setLoadingState(true, 0, initialChunks.length);
+      await loadChunks(initialChunks, (done, total) => setLoadingState(true, done, total));
+
+      const selectedGroups = [];
+      const spareGroups = [];
+      let firstFallbackGroup = null;
+      let pickedCount = 0;
+
+      const processChunk = (chunk, targetBudget) => {
+        const qs = chunkCache.get(chunk.file) || [];
         const groups = buildQuestionGroups(qs);
         const unseenGroups = winMs === null ? groups : groups.filter((g) => g.some((q) => !isQuestionSeen(q, seenMap, now, winMs)));
-        const shuffledGroups = shuffle(unseenGroups.length ? unseenGroups : groups);
-        for (const g of shuffledGroups) {
-          if (rawPicked.length + g.length <= n) rawPicked.push(...g);
-          if (rawPicked.length === n) break;
-        }
-        if (!rawPicked.length && shuffledGroups.length) rawPicked.push(...shuffledGroups[0]);
-      } else {
-        const drawCount = Math.min(n, totalUnseen);
-        const pickedIndices = sampleDistinctIndices(totalUnseen, drawCount).sort((a, b) => a - b);
-        const quotaMap = new Map();
-        let offset = 0;
-        let ptr = 0;
-        for (const entry of avail) {
-          const end = offset + entry.unseen;
-          let qCount = 0;
-          while (ptr < pickedIndices.length && pickedIndices[ptr] < end) {
-            qCount++;
-            ptr++;
-          }
-          if (qCount > 0) quotaMap.set(entry.chunk.file, qCount);
-          offset = end;
-        }
-
-        const initialChunks = avail.filter((x) => quotaMap.has(x.chunk.file)).map((x) => x.chunk);
-        const remainingPool = shuffle(avail.filter((x) => !quotaMap.has(x.chunk.file)).map((x) => x.chunk));
-        setLoadingState(true, 0, initialChunks.length);
-        await loadChunks(initialChunks, (done, total) => setLoadingState(true, done, total));
-
-        const selectedGroups = [];
-        const spareGroups = [];
-        let firstFallbackGroup = null;
-        let pickedCount = 0;
-
-        const processChunk = (chunk, targetBudget) => {
-          const qs = chunkCache.get(chunk.file) || [];
-          const groups = buildQuestionGroups(qs);
-          const unseenGroups = winMs === null ? groups : groups.filter((g) => g.some((q) => !isQuestionSeen(q, seenMap, now, winMs)));
-          const shuffled = shuffle(unseenGroups);
-          let chunkPicked = 0;
-          for (const g of shuffled) {
-            if (!firstFallbackGroup) firstFallbackGroup = g;
-            if (chunkPicked + g.length <= targetBudget && pickedCount + g.length <= n) {
-              selectedGroups.push(g);
-              chunkPicked += g.length;
-              pickedCount += g.length;
-            } else {
-              spareGroups.push(g);
-            }
-          }
-        };
-
-        for (const chunk of initialChunks) {
-          processChunk(chunk, quotaMap.get(chunk.file) || 0);
-        }
-
-        if (pickedCount < n && spareGroups.length) {
-          for (const g of shuffle(spareGroups)) {
-            if (pickedCount + g.length <= n) {
-              selectedGroups.push(g);
-              pickedCount += g.length;
-            }
-            if (pickedCount >= n) break;
+        const shuffled = shuffle(unseenGroups);
+        let chunkPicked = 0;
+        for (const g of shuffled) {
+          if (!firstFallbackGroup) firstFallbackGroup = g;
+          if (chunkPicked + g.length <= targetBudget && pickedCount + g.length <= n) {
+            selectedGroups.push(g);
+            chunkPicked += g.length;
+            pickedCount += g.length;
+          } else {
+            spareGroups.push(g);
           }
         }
+      };
 
-        while (pickedCount < n && remainingPool.length) {
-          const batchSize = Math.min(4, Math.max(1, n - pickedCount), remainingPool.length);
-          const batch = remainingPool.splice(0, batchSize);
-          setLoadingState(true, 0, batch.length);
-          await loadChunks(batch, (done, total) => setLoadingState(true, done, total));
-          for (const chunk of batch) {
-            if (pickedCount >= n) break;
-            processChunk(chunk, n - pickedCount);
-          }
-        }
-
-        if (!selectedGroups.length && firstFallbackGroup) {
-          selectedGroups.push(firstFallbackGroup);
-        }
-        rawPicked = shuffle(selectedGroups).flat();
+      for (const chunk of initialChunks) {
+        processChunk(chunk, quotaMap.get(chunk.file) || 0);
       }
+
+      if (pickedCount < n && spareGroups.length) {
+        for (const g of shuffle(spareGroups)) {
+          if (pickedCount + g.length <= n) {
+            selectedGroups.push(g);
+            pickedCount += g.length;
+          }
+          if (pickedCount >= n) break;
+        }
+      }
+
+      let fallbackBatches = 0;
+      while (pickedCount < n && remainingPool.length && fallbackBatches < 1 && !(n === 1 && firstFallbackGroup)) {
+        fallbackBatches++;
+        const batchSize = Math.min(4, Math.max(1, n - pickedCount), remainingPool.length);
+        const batch = remainingPool.splice(0, batchSize);
+        setLoadingState(true, 0, batch.length);
+        await loadChunks(batch, (done, total) => setLoadingState(true, done, total));
+        for (const chunk of batch) {
+          if (pickedCount >= n) break;
+          processChunk(chunk, n - pickedCount);
+        }
+      }
+
+      if (!selectedGroups.length && firstFallbackGroup) {
+        selectedGroups.push(firstFallbackGroup);
+      }
+      rawPicked = shuffle(selectedGroups).flat();
     }
 
     const prevSeenJson = localStorage.getItem("seenQuestions") || "{}";
@@ -912,6 +895,7 @@ async function startQuiz(mode = "normal") {
       `<div class="quiz-actions"><button type="submit">交卷</button><button type="button" id="cancelQuiz" class="secondary">返回重選</button></div>`;
     updateQuizProgress();
     $("cancelQuiz").onclick = () => {
+      submitToken++;
       hideNotice(false);
       localStorage.setItem("seenQuestions", prevSeenJson);
       updateRepeatInfo();
@@ -1012,37 +996,48 @@ async function askGeminiWithQuestion(q, chosen, btnEl, target = "aiMode") {
       btnEl.classList.remove("copied");
     }, 3000);
   }
-  window.open(url, "_blank", "noopener");
+  const win = window.open(url, "_blank", "noopener");
+  if (!win) {
+    showNotice("瀏覽器封鎖了新分頁，請點擊右側連結開啟 Gemini（題目已複製到剪貼簿）。", "warn", 8000, {
+      url,
+      text: "開啟 Gemini ↗",
+    });
+  }
 }
 
 async function submit(e) {
   e.preventDefault();
-  if (isSubmitting) return;
-  isSubmitting = true;
-  try {
-    const unansweredNums = [];
-    picked.forEach((_, i) => {
-      if (!$(`q${i}`).querySelector("input:checked")) unansweredNums.push(i + 1);
-    });
-    if (unansweredNums.length) {
-      const previewList = unansweredNums.slice(0, 10).map((n) => `第 ${n} 題`).join("、");
-      const suffix = unansweredNums.length > 10 ? " 等" : "";
-      const preview = `（${previewList}${suffix}）`;
-      const proceed = await askConfirm(
-        `還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`,
-        {
-          confirmText: "仍要交卷",
-          cancelText: `前往第 ${unansweredNums[0]} 題`,
-          danger: true,
-        }
-      );
-      if (!proceed) {
-        scrollToQuestion(unansweredNums[0] - 1);
-        return;
+  if (isGrading) return;
+  const myToken = ++submitToken;
+  const unansweredNums = [];
+  picked.forEach((_, i) => {
+    if (!$(`q${i}`).querySelector("input:checked")) unansweredNums.push(i + 1);
+  });
+  if (unansweredNums.length) {
+    const previewList = unansweredNums.slice(0, 10).map((n) => `第 ${n} 題`).join("、");
+    const suffix = unansweredNums.length > 10 ? " 等" : "";
+    const preview = `（${previewList}${suffix}）`;
+    const proceed = await askConfirm(
+      `還有 ${unansweredNums.length} 題未作答${preview}，未作答將以答錯計分。確定要交卷嗎？`,
+      {
+        confirmText: "仍要交卷",
+        cancelText: `前往第 ${unansweredNums[0]} 題`,
+        danger: true,
       }
+    );
+    if (myToken !== submitToken) return;
+    if (!proceed) {
+      scrollToQuestion(unansweredNums[0] - 1);
+      return;
     }
+  } else {
+    hideNotice(false);
+  }
 
+  isGrading = true;
+  try {
     let correct = 0;
+    let actualUnanswered = 0;
     const perSubject = new Map();
     const autoRemove = $("autoRemoveWrong").checked;
     picked.forEach((q, i) => {
@@ -1050,6 +1045,7 @@ async function submit(e) {
       const checkedEl = box.querySelector("input:checked");
       const chosen = checkedEl ? +checkedEl.value : null;
       q.chosen = chosen;
+      if (chosen === null) actualUnanswered++;
       const ok = chosen !== null && (q.answers ? q.answers.includes(chosen) : chosen === q.answer);
       if (ok) correct++;
       const subName = q.subject || "未分類";
@@ -1111,7 +1107,7 @@ async function submit(e) {
       $("quizProgress").innerHTML = `批改結果：<strong>${correct} / ${picked.length}</strong>（答對 ${correct}、答錯 ${picked.length - correct}）`;
     }
     if ($("quizProgressFill")) $("quizProgressFill").style.width = `${pct}%`;
-    const unansweredNote = unansweredNums.length ? `，未作答 ${unansweredNums.length} 題` : "";
+    const unansweredNote = actualUnanswered ? `，未作答 ${actualUnanswered} 題` : "";
     $("score").textContent = `得分：${correct} / ${picked.length}（${pct} 分${unansweredNote}）`;
     $("result").hidden = false;
     $("result").scrollIntoView({ behavior: "smooth" });
@@ -1121,7 +1117,7 @@ async function submit(e) {
     recordSubjectStats(perSubject, submitTs);
     saveHistory({ time: new Date().toLocaleString(), subject: label, correct, total: picked.length, pct });
   } finally {
-    isSubmitting = false;
+    isGrading = false;
   }
 }
 
@@ -1488,6 +1484,7 @@ $("retry").onclick = () => {
   startQuiz(lastMode);
 };
 $("backHome").onclick = () => {
+  submitToken++;
   hideNotice(false);
   $("quiz").hidden = true;
   $("result").hidden = true;

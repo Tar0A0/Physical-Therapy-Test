@@ -122,6 +122,12 @@ button.notice-close:hover:not(:disabled) {
   color: var(--text-ink);
 }
 
+.notice-link {
+  font-size: 0.84rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 main {
   max-width: var(--max-width);
   margin: 0 auto;
@@ -982,12 +988,7 @@ button.quiz-nav-btn {
 }
 
 .q-chip.answered,
-.q-chip.answered:hover:not(:disabled) {
-  background: var(--color-primary);
-  color: #FFFDF8;
-  border-color: var(--color-primary);
-}
-
+.q-chip.answered:hover:not(:disabled),
 .q-chip.right,
 .q-chip.right:hover:not(:disabled) {
   background: var(--color-primary);

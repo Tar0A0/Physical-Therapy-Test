@@ -3,7 +3,6 @@ const DATA_CACHE = "pt-exam-data-v1";
 
 const APP_SHELL = [
   "./",
-  "./index.html",
   "./style.css",
   "./app.js",
   "./manifest.webmanifest",
@@ -75,7 +74,7 @@ self.addEventListener("fetch", (event) => {
         const cached = await cache.match(req, { ignoreSearch: true });
         if (cached) return cached;
         if (req.mode === "navigate") {
-          const shell = (await cache.match("./index.html")) || (await cache.match("./"));
+          const shell = (await cache.match("./")) || (await cache.match("./index.html"));
           if (shell) return shell;
         }
         throw err;
